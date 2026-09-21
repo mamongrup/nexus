@@ -1,0 +1,4 @@
+# The Gleam application runs on its own loopback HTTP server.
+# Never expose source, environment files or migrations via Apache.
+Require all denied
+

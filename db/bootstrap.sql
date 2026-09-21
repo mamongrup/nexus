@@ -1,0 +1,3 @@
+\getenv app_password NEXUS_APP_PASSWORD
+SELECT format('CREATE ROLE nexus_app LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT PASSWORD %L', :'app_password')
+WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname='nexus_app') \gexec

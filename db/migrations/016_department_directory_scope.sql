@@ -1,0 +1,3 @@
+CREATE OR REPLACE FUNCTION organization.directory() RETURNS TABLE(data text[]) LANGUAGE sql SECURITY DEFINER SET search_path=pg_catalog AS $$ SELECT ARRAY[d.code,d.name,d.description,coalesce(od.status,'unassigned')] FROM organization.departments d LEFT JOIN organization.org_departments od ON od.department_code=d.code AND od.workspace=d.workspace AND od.organization_id=nullif(current_setting('app.tenant_id',true),'')::uuid WHERE d.workspace=auth.workspace() AND ((auth.workspace()='nexus' AND onboarding.operator()) OR auth.workspace()='supplier') ORDER BY d.name $$;
+REVOKE ALL ON FUNCTION organization.directory(text) FROM nexus_app;
+GRANT EXECUTE ON FUNCTION organization.directory() TO nexus_app;

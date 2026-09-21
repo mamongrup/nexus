@@ -1,0 +1,4 @@
+CREATE TABLE cms.contact_messages (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), name text NOT NULL, email text NOT NULL, message text NOT NULL, recipient text NOT NULL DEFAULT 'info@nexustraveltech.com', status text NOT NULL DEFAULT 'queued' CHECK(status IN ('queued','sent','failed')), created_at timestamptz NOT NULL DEFAULT now());
+ALTER TABLE cms.contact_messages ENABLE ROW LEVEL SECURITY;
+CREATE FUNCTION cms.contact_submit(p_name text,p_email text,p_message text) RETURNS text LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog AS $$ BEGIN IF length(trim(p_name)) NOT BETWEEN 2 AND 160 OR p_email !~ '^[^ @]+@[^ @]+[.][^ @]+$' OR length(trim(p_message)) NOT BETWEEN 5 AND 5000 THEN RETURN 'invalid'; END IF; INSERT INTO cms.contact_messages(name,email,message) VALUES(trim(p_name),lower(trim(p_email)),trim(p_message)); RETURN 'sent'; END $$;
+GRANT EXECUTE ON FUNCTION cms.contact_submit(text,text,text) TO nexus_app;

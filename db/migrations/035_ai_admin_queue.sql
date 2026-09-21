@@ -1,0 +1,2 @@
+CREATE FUNCTION ai.admin_queue() RETURNS TABLE(data text[]) LANGUAGE sql SECURITY DEFINER SET search_path=pg_catalog AS $$ SELECT ARRAY[r.id::text,o.legal_name,r.property_id::text,r.capability,r.status,r.provider,r.created_at::text] FROM ai.listing_requests r JOIN core.organizations o ON o.id=r.tenant_id WHERE onboarding.operator() ORDER BY r.created_at DESC LIMIT 300 $$;
+GRANT EXECUTE ON FUNCTION ai.admin_queue() TO nexus_app;
