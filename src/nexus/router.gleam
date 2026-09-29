@@ -3898,10 +3898,14 @@ fn admin(
                           draft,
                           field(fields, "seo_title"),
                           field(fields, "seo_description"),
-                          case field(fields, "category_code") {
-                            "" -> "villa"
-                            c -> c
-                          },
+                          // Resolve the category through the shared helper.
+                          // Defaulting to "villa" here wrote a retired code:
+                          // villa is a holiday_home property type, and the
+                          // supplier approval trigger rejects any code the
+                          // supplier has no approved application for, so a
+                          // listing created without an explicit category could
+                          // never be saved.
+                          field(fields, "category_code") |> category_or_default,
                           attributes,
                           media_json,
                           field(fields, "category_code") != "",

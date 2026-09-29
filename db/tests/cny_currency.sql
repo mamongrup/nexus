@@ -17,10 +17,10 @@ BEGIN
   INSERT INTO onboarding.applications(owner_user_id,tenant_id,category_code,legal_name,status,identity_status)
     VALUES(owner_id,tenant_id,'holiday_home','CNY currency fixture','approved','verified');
   INSERT INTO catalog.properties(
-    tenant_id, title, description, locality, capacity, nightly_minor, currency, status, category_code,
+    tenant_id, title, description, locality, capacity, nightly_minor, currency, status, moderation_status, category_code,
     attributes, seo_title, seo_description, media
   ) VALUES (
-    tenant_id, 'CNY Villa', 'CNY currency test listing', 'Shanghai', 2, 8800, 'CNY', 'published', 'holiday_home',
+    tenant_id, 'CNY Villa', 'CNY currency test listing', 'Shanghai', 2, 8800, 'CNY', 'published', 'approved', 'holiday_home',
     '{"property_type":"villa","bedroom_count":1,"bathroom_count":1,"guest_capacity":2}'::jsonb,
     'CNY Villa','CNY currency test listing','["https://example.invalid/cny-fixture.jpg"]'::jsonb
   ) RETURNING id INTO property_id;

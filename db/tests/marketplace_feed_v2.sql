@@ -8,8 +8,8 @@ BEGIN
  VALUES(u,t,u::text||'@example.invalid','disabled','Owner','owner');
  INSERT INTO onboarding.applications(owner_user_id,tenant_id,category_code,legal_name,status,identity_status)
  VALUES(u,t,'holiday_home','Feed fixture','approved','verified');
- INSERT INTO catalog.properties(tenant_id,title,description,locality,capacity,nightly_minor,currency,status,category_code,attributes,seo_title,seo_description,media)
- VALUES(t,'Typed Villa','Marketplace feed test listing','Kaş',4,12000,'TRY','published','holiday_home',
+ INSERT INTO catalog.properties(tenant_id,title,description,locality,capacity,nightly_minor,currency,status,moderation_status,category_code,attributes,seo_title,seo_description,media)
+ VALUES(t,'Typed Villa','Marketplace feed test listing','Kaş',4,12000,'TRY','published','approved','holiday_home',
         '{"property_type":"villa","bedroom_count":2,"bathroom_count":1,"guest_capacity":4}'::jsonb,
         'Typed Villa','Marketplace feed test listing','["https://cdn.example/villa.jpg"]'::jsonb) RETURNING id INTO p;
  SELECT count(*) INTO rows_count FROM catalog.marketplace_listings_v2('','','');

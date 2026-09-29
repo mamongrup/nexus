@@ -44,12 +44,12 @@ BEGIN
   PERFORM set_config('app.role', 'owner', true);
 
   INSERT INTO catalog.properties(tenant_id, title, description, capacity, nightly_minor, currency, locality, category_code,
-                                 attributes, seo_title, seo_description, media, status)
+                                 attributes, seo_title, seo_description, media, status, moderation_status)
   VALUES (v_supplier, 'Benchmark Luxury Hotel & Suites', '5 yıldızlı lüks konaklama ve tatil tesisi', 30, 1500000, 'TRY',
           'Antalya / Belek', 'hotel',
           '{"room_type":"deluxe","property_type":"hotel","room_types":"deluxe","board_type":"room_only","check_in_time":"14:00","check_out_time":"11:00"}'::jsonb,
           'Benchmark Luxury Hotel', 'Benchmark hotel listing for sector operations',
-          '["https://example.invalid/benchmark-hotel.jpg"]'::jsonb, 'published')
+          '["https://example.invalid/benchmark-hotel.jpg"]'::jsonb, 'published', 'approved')
   RETURNING id INTO v_property;
 
   -- Create a PMS room

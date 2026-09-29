@@ -1,8 +1,14 @@
 # NEXUS TravelTech · Yerel geliştirme
 
-## 15 Eylül 2026 güvenilirlik güncellemesi
+## Güvenilirlik güncellemeleri
 
-Güncel düzeltmeler ve açık işler: [güvenilirlik raporu](docs/reliability-2026-09-15.md).
+- 30 Eylül 2026: [güvenilirlik raporu](docs/reliability-2026-09-30.md). Tedarikçinin
+  moderasyon onayı olmadan ilan yayınlamasını engelleyen koruma, bozuk durum geçiş
+  fonksiyonu düzeltmesi ve `smoke.ps1` in 1.2.0 sözleşmesine uyarlanması.
+- 15 Eylül 2026: [güvenilirlik raporu](docs/reliability-2026-09-15.md).
+  Doğrulanmış sağlayıcı cevabı olmayan işlemlerin 503 döndürmesi ve hakediş kayıtlarının
+  dondurulmuş tutarlara bağlanması.
+
 Doğrulanmış satış bağlantısı tamamlanana kadar pazaryeri rezervasyonu 503 döndürür.
 103 ve 104 migration'ları gerçek dış işlem olmadan başarı kaydını engeller ve muhasebe fişini dondurulmuş teklif tutarlarına bağlar.
 

@@ -7,10 +7,10 @@ BEGIN
  INSERT INTO auth.users(id,tenant_id,email,password_hash,display_name,role) VALUES(u,t,u::text||'@example.invalid','disabled','Owner','owner');
  INSERT INTO onboarding.applications(owner_user_id,tenant_id,category_code,legal_name,status,identity_status)
  VALUES(u,t,'hotel','Operational truth fixture','approved','verified');
- INSERT INTO catalog.properties(tenant_id,title,description,locality,capacity,nightly_minor,currency,category_code,attributes,seo_title,seo_description,media,status)
+ INSERT INTO catalog.properties(tenant_id,title,description,locality,capacity,nightly_minor,currency,category_code,attributes,seo_title,seo_description,media,status,moderation_status)
  VALUES(t,'Truth Hotel','Operational provider truth test listing','Test',2,10000,'TRY','hotel',
         '{"room_type":"double","property_type":"hotel","room_types":"double","board_type":"room_only","check_in_time":"14:00","check_out_time":"11:00"}'::jsonb,
-        'Truth Hotel','Operational provider truth test listing','["https://example.invalid/operational-fixture.jpg"]'::jsonb,'published') RETURNING id INTO p;
+        'Truth Hotel','Operational provider truth test listing','["https://example.invalid/operational-fixture.jpg"]'::jsonb,'published','approved') RETURNING id INTO p;
  INSERT INTO catalog.property_units(property_id,unit_code,unit_name) VALUES(p,'101','Room 101') RETURNING id INTO room;
  PERFORM set_config('app.tenant_id',t::text,true),set_config('app.actor_id',u::text,true),set_config('app.role','owner',true);
  answer:=catalog.quick_check_in(p,'101','Guest',2,10000);

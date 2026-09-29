@@ -254,7 +254,10 @@ pub fn create_with_seo(
     d,
     seo_title,
     seo_description,
-    "villa",
+    // holiday_home is the canonical code for villa, apart and the other
+    // standalone property types. Writing "villa" would store a retired code
+    // that the supplier approval trigger cannot match.
+    "holiday_home",
     "{}",
     "[]",
     False,
