@@ -419,11 +419,18 @@ pub fn shell(s: Session, csrf: String, page: String, body: Element(Nil)) {
                 nav_link("/admin/requests", "Talep Takibi", icons.transfer()),
                 case s.role == "owner" {
                   True ->
-                    nav_link(
-                      "/admin/settings",
-                      "Sistem Ayarları",
-                      icons.security(),
-                    )
+                    el("div", "", [
+                      nav_link(
+                        "/admin/control-center",
+                        "Platform denetimleri",
+                        icons.security(),
+                      ),
+                      nav_link(
+                        "/admin/settings",
+                        "Sistem Ayarları",
+                        icons.security(),
+                      ),
+                    ])
                   False -> text("")
                 },
                 nav_link("/admin/reservations", "Rezervasyonlar", icons.hotel()),
@@ -517,6 +524,11 @@ pub fn shell(s: Session, csrf: String, page: String, body: Element(Nil)) {
                   "/admin/finance",
                   "Finans & Hakediş",
                   icons.accounting(),
+                ),
+                nav_link(
+                  "/admin/supplier-performance",
+                  "Performans Raporu",
+                  icons.trending_up(),
                 ),
                 nav_link("/admin/profile", "Profilim", icons.user()),
                 nav_link("/", "Ön Yüz ↗", icons.arrow_up_right()),
@@ -1006,9 +1018,15 @@ fn listing_actions(s: Session, csrf: String, p: Property) {
               "in_review" ->
                 el("div", "review-actions", [
                   status_form(csrf, p, "approved", "Onayla ve yayınla", ""),
-                  review_note_form(csrf, p, "changes_requested", "Düzeltme iste"),
+                  review_note_form(
+                    csrf,
+                    p,
+                    "changes_requested",
+                    "Düzeltme iste",
+                  ),
                 ])
-              "approved" -> review_note_form(csrf, p, "suspended", "Yayını durdur")
+              "approved" ->
+                review_note_form(csrf, p, "suspended", "Yayını durdur")
               _ -> text("Tedarikçi gönderimi bekleniyor")
             }
         },
@@ -1018,13 +1036,15 @@ fn listing_actions(s: Session, csrf: String, p: Property) {
         "in_review" -> text("İnceleme sonucu bekleniyor")
         "approved" ->
           case domain.can_manage_catalog(s.role) {
-            True -> status_form(csrf, p, "confirm_current", "Bilgiler güncel", "")
+            True ->
+              status_form(csrf, p, "confirm_current", "Bilgiler güncel", "")
             False -> text("Bilgiler güncel")
           }
         _ ->
           case domain.can_submit_listing_review(s.role) {
             True -> status_form(csrf, p, "submit", "NEXUS onayına gönder", "")
-            False -> el("span", "badge muted", [text("Onaya gönderme yetkisi yok")])
+            False ->
+              el("span", "badge muted", [text("Onaya gönderme yetkisi yok")])
           }
       }
   }
@@ -2178,7 +2198,8 @@ fn managed_filter_attrs(category: String, code: String) {
 
 fn category_price_label(category: String) -> String {
   case category {
-    "hotel" | "holiday_home" | "villa" -> "Gecelik başlangıç fiyatı (ör. 4500.00)"
+    "hotel" | "holiday_home" | "villa" ->
+      "Gecelik başlangıç fiyatı (ör. 4500.00)"
     "car" -> "Günlük kiralama başlangıç fiyatı"
     "yacht" -> "Kiralama başlangıç fiyatı"
     "restaurant" -> "Kişi başı / rezervasyon başlangıç fiyatı"

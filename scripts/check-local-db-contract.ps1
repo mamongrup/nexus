@@ -421,7 +421,7 @@ foreach ($row in $syncContractStateRows) {
 if ($syncContractState['catalog_contract_version'] -ne '1.1.0') {
   throw "Nexus DB sync katalog sözleşme sürümü uyumsuz: $($syncContractState['catalog_contract_version'])"
 }
-if ($syncContractState['supplier_listing_contract_version'] -ne '1.1.0') {
+if ($syncContractState['supplier_listing_contract_version'] -ne $contract.contract_version) {
   throw "Nexus DB sync ilan sözleşme sürümü uyumsuz: $($syncContractState['supplier_listing_contract_version'])"
 }
 if ([int]$syncContractState['active_category_count'] -ne 17) {
@@ -438,3 +438,19 @@ if (-not $syncContractState['supplier_module_detail_signature'] -or $syncContrac
 }
 
 Write-Output 'Nexus DB senkronizasyon sözleşme durumu uyumlu.'
+
+$applicationPassword = $env:PGPASSWORD
+try {
+  $env:PGPASSWORD = $env:PGOWNER_PASSWORD
+  & $pg -X -w -h $env:PGHOST -p $env:PGPORT -U $env:PGOWNER -d $env:PGDATABASE -v ON_ERROR_STOP=1 -f (Join-Path $projectRoot 'test/platform_control_center.sql')
+  if ($LASTEXITCODE -ne 0) { throw 'Platform süper yönetici denetimi başarısız.' }
+  & $pg -X -w -h $env:PGHOST -p $env:PGPORT -U $env:PGOWNER -d $env:PGDATABASE -v ON_ERROR_STOP=1 -f (Join-Path $projectRoot 'test/supplier_document_expiry_guard.sql')
+  if ($LASTEXITCODE -ne 0) { throw 'Tedarikçi belge süresi onay denetimi başarısız.' }
+  & $pg -X -w -h $env:PGHOST -p $env:PGPORT -U $env:PGOWNER -d $env:PGDATABASE -v ON_ERROR_STOP=1 -f (Join-Path $projectRoot 'test/supplier_listing_approval_loss.sql')
+  if ($LASTEXITCODE -ne 0) { throw 'Tedarikçi ilan yayın yetkisi denetimi başarısız.' }
+} finally {
+  $env:PGPASSWORD = $applicationPassword
+}
+Write-Output 'Platform süper yönetici denetimi geçti.'
+Write-Output 'Tedarikçi belge süresi onay denetimi geçti.'
+Write-Output 'Tedarikçi ilan yayın yetkisi denetimi geçti.'

@@ -955,17 +955,23 @@ pub fn ops_page(
           ]),
           el("div", "field-meta-badges", [
             el("span", "badge neutral", [
-              text("Kapsam: " <> case scope {
-                "" -> "-"
-                _ -> scope
-              }),
+              text(
+                "Kapsam: "
+                <> case scope {
+                  "" -> "-"
+                  _ -> scope
+                },
+              ),
             ]),
           ]),
           el("p", "muted", [
-            text("Yetkiler: " <> case permissions {
-              "" -> "-"
-              _ -> permissions
-            }),
+            text(
+              "Yetkiler: "
+              <> case permissions {
+                "" -> "-"
+                _ -> permissions
+              },
+            ),
           ]),
         ]),
         el("div", "ops-card", [

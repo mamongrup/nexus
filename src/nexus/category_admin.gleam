@@ -261,7 +261,9 @@ pub fn page(
             ],
             [
               el("p", "muted text-sm", [
-                text("Filtreler yükleniyor veya bu kategori için henüz tanım yok."),
+                text(
+                  "Filtreler yükleniyor veya bu kategori için henüz tanım yok.",
+                ),
               ]),
             ],
           ),
@@ -426,13 +428,7 @@ fn managed_filter_item_form(csrf: String, category: String) {
       ]),
       input("Yardım metni", "help_text", "text", "", False),
       el("div", "form-grid grid-3 mb-3", [
-        input(
-          "Sözleşme alan kodu",
-          "contract_field_code",
-          "text",
-          "",
-          False,
-        ),
+        input("Sözleşme alan kodu", "contract_field_code", "text", "", False),
         input("Sözleşme değeri", "contract_value", "text", "", False),
         input("Sıra", "position", "number", "10", True),
       ]),

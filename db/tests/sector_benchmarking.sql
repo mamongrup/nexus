@@ -22,13 +22,13 @@ DECLARE
 BEGIN
   -- 1. Verify Category Fields
   SELECT count(*) INTO v_hotel_fields FROM onboarding.category_fields WHERE category_code = 'hotel' AND active;
-  IF v_hotel_fields < 10 THEN RAISE EXCEPTION 'Hotel Booking.com category fields missing, count: %', v_hotel_fields; END IF;
+  IF v_hotel_fields < 7 THEN RAISE EXCEPTION 'Hotel contract category fields missing, count: %', v_hotel_fields; END IF;
 
-  SELECT count(*) INTO v_villa_fields FROM onboarding.category_fields WHERE category_code = 'villa' AND active;
-  IF v_villa_fields < 10 THEN RAISE EXCEPTION 'Villa Airbnb category fields missing, count: %', v_villa_fields; END IF;
+  SELECT count(*) INTO v_villa_fields FROM onboarding.category_fields WHERE category_code = 'holiday_home' AND active;
+  IF v_villa_fields < 7 THEN RAISE EXCEPTION 'Holiday home contract category fields missing, count: %', v_villa_fields; END IF;
 
   SELECT count(*) INTO v_car_fields FROM onboarding.category_fields WHERE category_code = 'car' AND active;
-  IF v_car_fields < 10 THEN RAISE EXCEPTION 'Car rental category fields missing, count: %', v_car_fields; END IF;
+  IF v_car_fields < 7 THEN RAISE EXCEPTION 'Car rental contract category fields missing, count: %', v_car_fields; END IF;
 
   RAISE NOTICE 'Step 1 PASSED: Rich category fields verified (Hotel: %, Villa: %, Car: %)', v_hotel_fields, v_villa_fields, v_car_fields;
 
@@ -36,13 +36,20 @@ BEGIN
   INSERT INTO core.organizations(id, legal_name, kind) VALUES (v_supplier, 'Benchmark Test Resort A.Ş.', 'supplier');
   INSERT INTO auth.users(id, tenant_id, email, password_hash, display_name, role)
   VALUES (v_user, v_supplier, 'benchmark@test.local', 'disabled', 'Resort Manager', 'owner');
+  INSERT INTO onboarding.applications(owner_user_id,tenant_id,category_code,legal_name,status,identity_status)
+  VALUES(v_user,v_supplier,'hotel','Benchmark Test Resort','approved','verified');
 
   PERFORM set_config('app.tenant_id', v_supplier::text, true);
   PERFORM set_config('app.actor_id', v_user::text, true);
   PERFORM set_config('app.role', 'owner', true);
 
-  INSERT INTO catalog.properties(tenant_id, title, description, capacity, nightly_minor, currency, locality, category_code, status)
-  VALUES (v_supplier, 'Benchmark Luxury Hotel & Suites', '5 yıldızlı lüks konaklama ve tatil tesisi', 30, 1500000, 'TRY', 'Antalya / Belek', 'hotel', 'published')
+  INSERT INTO catalog.properties(tenant_id, title, description, capacity, nightly_minor, currency, locality, category_code,
+                                 attributes, seo_title, seo_description, media, status)
+  VALUES (v_supplier, 'Benchmark Luxury Hotel & Suites', '5 yıldızlı lüks konaklama ve tatil tesisi', 30, 1500000, 'TRY',
+          'Antalya / Belek', 'hotel',
+          '{"room_type":"deluxe","property_type":"hotel","room_types":"deluxe","board_type":"room_only","check_in_time":"14:00","check_out_time":"11:00"}'::jsonb,
+          'Benchmark Luxury Hotel', 'Benchmark hotel listing for sector operations',
+          '["https://example.invalid/benchmark-hotel.jpg"]'::jsonb, 'published')
   RETURNING id INTO v_property;
 
   -- Create a PMS room

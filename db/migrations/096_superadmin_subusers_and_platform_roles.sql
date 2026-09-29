@@ -148,34 +148,34 @@ BEGIN
 
   IF v_nexus_id IS NOT NULL THEN
     -- Operasyon Direktörü
-    INSERT INTO auth.users(tenant_id, email, password_hash, display_name, role)
-    VALUES (v_nexus_id, 'operasyon@nexus.local', crypt('password123', gen_salt('bf', 12)), 'Burak Operasyon Direktörü', 'operations_director')
-    ON CONFLICT (email) DO UPDATE SET role = 'operations_director', display_name = 'Burak Operasyon Direktörü';
+    INSERT INTO auth.users(tenant_id, email, password_hash, display_name, role, active)
+    VALUES (v_nexus_id, 'operasyon@nexus.local', crypt(encode(gen_random_bytes(24),'hex'), gen_salt('bf', 12)), 'Burak Operasyon Direktörü', 'operations_director', false)
+    ON CONFLICT (email) DO UPDATE SET role = 'operations_director', display_name = 'Burak Operasyon Direktörü', active = false, password_hash = crypt(encode(gen_random_bytes(24),'hex'), gen_salt('bf', 12));
 
     -- İlan & İçerik Moderatörü
-    INSERT INTO auth.users(tenant_id, email, password_hash, display_name, role)
-    VALUES (v_nexus_id, 'moderator@nexus.local', crypt('password123', gen_salt('bf', 12)), 'Deniz İlan Moderatörü', 'content_moderator')
-    ON CONFLICT (email) DO UPDATE SET role = 'content_moderator', display_name = 'Deniz İlan Moderatörü';
+    INSERT INTO auth.users(tenant_id, email, password_hash, display_name, role, active)
+    VALUES (v_nexus_id, 'moderator@nexus.local', crypt(encode(gen_random_bytes(24),'hex'), gen_salt('bf', 12)), 'Deniz İlan Moderatörü', 'content_moderator', false)
+    ON CONFLICT (email) DO UPDATE SET role = 'content_moderator', display_name = 'Deniz İlan Moderatörü', active = false, password_hash = crypt(encode(gen_random_bytes(24),'hex'), gen_salt('bf', 12));
 
     -- Finans & Mutabakat Müdürü
-    INSERT INTO auth.users(tenant_id, email, password_hash, display_name, role)
-    VALUES (v_nexus_id, 'finans@nexus.local', crypt('password123', gen_salt('bf', 12)), 'Zeynep Finans Müdürü', 'finance_manager')
-    ON CONFLICT (email) DO UPDATE SET role = 'finance_manager', display_name = 'Zeynep Finans Müdürü';
+    INSERT INTO auth.users(tenant_id, email, password_hash, display_name, role, active)
+    VALUES (v_nexus_id, 'finans@nexus.local', crypt(encode(gen_random_bytes(24),'hex'), gen_salt('bf', 12)), 'Zeynep Finans Müdürü', 'finance_manager', false)
+    ON CONFLICT (email) DO UPDATE SET role = 'finance_manager', display_name = 'Zeynep Finans Müdürü', active = false, password_hash = crypt(encode(gen_random_bytes(24),'hex'), gen_salt('bf', 12));
 
     -- Tedarikçi İlişkileri & Onboarding Uzmanı
-    INSERT INTO auth.users(tenant_id, email, password_hash, display_name, role)
-    VALUES (v_nexus_id, 'onboarding@nexus.local', crypt('password123', gen_salt('bf', 12)), 'Murat Onboarding Uzmanı', 'onboarding_specialist')
-    ON CONFLICT (email) DO UPDATE SET role = 'onboarding_specialist', display_name = 'Murat Onboarding Uzmanı';
+    INSERT INTO auth.users(tenant_id, email, password_hash, display_name, role, active)
+    VALUES (v_nexus_id, 'onboarding@nexus.local', crypt(encode(gen_random_bytes(24),'hex'), gen_salt('bf', 12)), 'Murat Onboarding Uzmanı', 'onboarding_specialist', false)
+    ON CONFLICT (email) DO UPDATE SET role = 'onboarding_specialist', display_name = 'Murat Onboarding Uzmanı', active = false, password_hash = crypt(encode(gen_random_bytes(24),'hex'), gen_salt('bf', 12));
 
     -- Yapay Zeka & Fiyatlama Mühendisi
-    INSERT INTO auth.users(tenant_id, email, password_hash, display_name, role)
-    VALUES (v_nexus_id, 'ai-muhendis@nexus.local', crypt('password123', gen_salt('bf', 12)), 'Arda AI & Fiyatlama Mühendisi', 'ai_pricing_specialist')
-    ON CONFLICT (email) DO UPDATE SET role = 'ai_pricing_specialist', display_name = 'Arda AI & Fiyatlama Mühendisi';
+    INSERT INTO auth.users(tenant_id, email, password_hash, display_name, role, active)
+    VALUES (v_nexus_id, 'ai-muhendis@nexus.local', crypt(encode(gen_random_bytes(24),'hex'), gen_salt('bf', 12)), 'Arda AI & Fiyatlama Mühendisi', 'ai_pricing_specialist', false)
+    ON CONFLICT (email) DO UPDATE SET role = 'ai_pricing_specialist', display_name = 'Arda AI & Fiyatlama Mühendisi', active = false, password_hash = crypt(encode(gen_random_bytes(24),'hex'), gen_salt('bf', 12));
 
     -- Platform Destek Sorumlusu
-    INSERT INTO auth.users(tenant_id, email, password_hash, display_name, role)
-    VALUES (v_nexus_id, 'destek@nexus.local', crypt('password123', gen_salt('bf', 12)), 'Cem Destek Sorumlusu', 'support_specialist')
-    ON CONFLICT (email) DO UPDATE SET role = 'support_specialist', display_name = 'Cem Destek Sorumlusu';
+    INSERT INTO auth.users(tenant_id, email, password_hash, display_name, role, active)
+    VALUES (v_nexus_id, 'destek@nexus.local', crypt(encode(gen_random_bytes(24),'hex'), gen_salt('bf', 12)), 'Cem Destek Sorumlusu', 'support_specialist', false)
+    ON CONFLICT (email) DO UPDATE SET role = 'support_specialist', display_name = 'Cem Destek Sorumlusu', active = false, password_hash = crypt(encode(gen_random_bytes(24),'hex'), gen_salt('bf', 12));
   END IF;
 END $$;
 

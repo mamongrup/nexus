@@ -1,4 +1,7 @@
 . "$PSScriptRoot/env.ps1"
+if ($env:ALLOW_DEMO_PASSWORDS -ne 'true') {
+  throw "Refusing to set public demo passwords. Set ALLOW_DEMO_PASSWORDS=true only in disposable local development."
+}
 $saved = $env:PGPASSWORD
 try {
   $env:PGPASSWORD = $env:PGOWNER_PASSWORD

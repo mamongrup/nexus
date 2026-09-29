@@ -48,4 +48,10 @@ try {
  if ($LASTEXITCODE -ne 0) { throw 'Sector benchmarking tests failed' }
  & "$PgBin/psql.exe" -X -w -U $env:PGOWNER -v ON_ERROR_STOP=1 -f "$ProjectRoot/db/tests/elite_hospitality_suite.sql"
  if ($LASTEXITCODE -ne 0) { throw 'Elite hospitality suite tests failed' }
+ & "$PgBin/psql.exe" -X -w -U $env:PGOWNER -v ON_ERROR_STOP=1 -f "$ProjectRoot/db/tests/category_values.sql"
+ if ($LASTEXITCODE -ne 0) { throw 'Category value validation tests failed' }
+ foreach ($testFile in Get-ChildItem -LiteralPath "$ProjectRoot/test" -Filter '*.sql' | Sort-Object Name) {
+  & "$PgBin/psql.exe" -X -w -U $env:PGOWNER -v ON_ERROR_STOP=1 -f $testFile.FullName
+  if ($LASTEXITCODE -ne 0) { throw "Database test failed: $($testFile.Name)" }
+ }
 } finally { $env:PGPASSWORD=$appPassword }

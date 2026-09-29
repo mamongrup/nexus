@@ -278,7 +278,10 @@ pub fn can_access_einvoice(role: String) -> Bool {
   || role == "frontdesk"
 }
 
-pub fn can_access_supplier_permission(role: String, permission: String) -> Bool {
+pub fn can_access_supplier_permission(
+  role: String,
+  permission: String,
+) -> Bool {
   case permission {
     "supplier.dashboard.view" -> can_access_listings(role)
     "supplier.company.view" -> can_manage_team(role)
@@ -288,36 +291,54 @@ pub fn can_access_supplier_permission(role: String, permission: String) -> Bool 
     "supplier.catalog.view" -> can_access_listings(role)
     "supplier.catalog.manage" -> can_access_listings(role)
     "supplier.catalog.submit_review" -> can_access_listings(role)
-    "supplier.availability.view" -> can_access_listings(role) || can_access_reservations(role)
-    "supplier.availability.manage" -> can_access_listings(role) || can_access_reservations(role)
+    "supplier.availability.view" ->
+      can_access_listings(role) || can_access_reservations(role)
+    "supplier.availability.manage" ->
+      can_access_listings(role) || can_access_reservations(role)
     "supplier.pricing.view" -> can_access_rate_shopper(role)
     "supplier.pricing.manage" -> can_access_rate_shopper(role)
     "supplier.reservations.view" -> can_access_reservations(role)
     "supplier.reservations.manage" -> can_access_reservations(role)
     "supplier.offers.view" -> can_access_crm(role) || can_access_listings(role)
-    "supplier.offers.manage" -> can_access_crm(role) || can_access_listings(role)
+    "supplier.offers.manage" ->
+      can_access_crm(role) || can_access_listings(role)
     "supplier.customers.view" -> can_access_crm(role)
     "supplier.customers.manage" -> can_access_crm(role)
-    "supplier.messages.view" -> can_access_messages(role) || can_access_crm(role)
-    "supplier.messages.manage" -> can_access_messages(role) || can_access_crm(role)
-    "supplier.tasks.view" -> can_access_housekeeping(role) || can_access_reservations(role)
-    "supplier.tasks.manage" -> can_access_housekeeping(role) || can_access_reservations(role)
+    "supplier.messages.view" ->
+      can_access_messages(role) || can_access_crm(role)
+    "supplier.messages.manage" ->
+      can_access_messages(role) || can_access_crm(role)
+    "supplier.tasks.view" ->
+      can_access_housekeeping(role) || can_access_reservations(role)
+    "supplier.tasks.manage" ->
+      can_access_housekeeping(role) || can_access_reservations(role)
     "supplier.staff.view" -> can_manage_team(role) || can_access_hr(role)
     "supplier.staff.manage" -> can_manage_team(role)
     "supplier.accounting.view" -> can_access_accounting(role)
     "supplier.accounting.manage" -> can_access_accounting(role)
     "supplier.payments.view" -> can_access_accounting(role)
     "supplier.payments.manage" -> can_access_accounting(role)
-    "supplier.reports.view" -> can_access_accounting(role) || can_access_listings(role) || can_access_reservations(role)
-    "supplier.integrations.view" -> can_access_system_settings(role) || role == "operations_director" || role == "general_manager"
-    "supplier.integrations.manage" -> can_access_system_settings(role) || role == "operations_director"
+    "supplier.reports.view" ->
+      can_access_accounting(role)
+      || can_access_listings(role)
+      || can_access_reservations(role)
+    "supplier.integrations.view" ->
+      can_access_system_settings(role)
+      || role == "operations_director"
+      || role == "general_manager"
+    "supplier.integrations.manage" ->
+      can_access_system_settings(role) || role == "operations_director"
     "supplier.settings.view" -> can_manage_team(role)
-    "supplier.settings.manage" -> can_access_system_settings(role) || role == "general_manager"
+    "supplier.settings.manage" ->
+      can_access_system_settings(role) || role == "general_manager"
     _ -> role == "owner"
   }
 }
 
-pub fn can_access_any_supplier_permission(role: String, permissions_csv: String) -> Bool {
+pub fn can_access_any_supplier_permission(
+  role: String,
+  permissions_csv: String,
+) -> Bool {
   let permissions =
     permissions_csv
     |> string.split(",")
@@ -325,7 +346,10 @@ pub fn can_access_any_supplier_permission(role: String, permissions_csv: String)
     |> list.filter(fn(permission) { permission != "" })
 
   case permissions {
-    [] -> role == "owner" || role == "operations_director" || role == "general_manager"
+    [] ->
+      role == "owner"
+      || role == "operations_director"
+      || role == "general_manager"
     _ ->
       list.any(permissions, fn(permission) {
         can_access_supplier_permission(role, permission)

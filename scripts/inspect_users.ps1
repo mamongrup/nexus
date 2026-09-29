@@ -1,11 +1,12 @@
 $session = New-Object Microsoft.PowerShell.Commands.WebRequestSession
+$adminPassword = if ($env:ADMIN_PASSWORD) { $env:ADMIN_PASSWORD } elseif ($env:ALLOW_DEMO_PASSWORDS -eq 'true') { 'password123' } else { throw 'ADMIN_PASSWORD is required. Set ALLOW_DEMO_PASSWORDS=true only for local demo accounts.' }
 $r1 = Invoke-WebRequest -Uri 'http://127.0.0.1:8081/login' -WebSession $session -UseBasicParsing
 $csrf = [regex]::Match($r1.Content, 'name="csrf"[^>]*value="([^"]+)"').Groups[1].Value
 
 $r2 = Invoke-WebRequest -Uri 'http://127.0.0.1:8081/login' -Method Post -WebSession $session -Headers @{Origin = 'http://127.0.0.1:8081'} -Body @{
     csrf = $csrf
     email = 'admin@nexus.local'
-    password = 'password123'
+    password = $adminPassword
 } -UseBasicParsing
 
 $p = Invoke-WebRequest -Uri 'http://127.0.0.1:8081/admin/users' -WebSession $session -UseBasicParsing
@@ -18,4 +19,3 @@ Write-Output "Has role-definition-card: $($p.Content.Contains('role-definition-c
 Write-Output "Has user-management-card: $($p.Content.Contains('user-management-card'))"
 Write-Output "Has user-avatar-circle: $($p.Content.Contains('user-avatar-circle'))"
 Write-Output "Has password-reset-form-box: $($p.Content.Contains('password-reset-form-box'))"
-

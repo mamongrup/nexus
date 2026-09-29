@@ -7,8 +7,9 @@ BEGIN
  (su,s,su::text||'@example.invalid','disabled','Supplier','owner'),(nu,n,nu::text||'@example.invalid','disabled','Nexus','owner');
  INSERT INTO onboarding.categories(code,name) VALUES('review-test','Review test');
  INSERT INTO onboarding.applications(owner_user_id,tenant_id,category_code,legal_name,status,identity_status) VALUES(su,s,'review-test','Review supplier','approved','verified');
- INSERT INTO catalog.properties(id,tenant_id,title,locality,description,capacity,nightly_minor,currency,category_code,seo_title,seo_description,schema_managed)
- VALUES(p,s,'Review listing','Antalya','Complete description',2,10000,'TRY','review-test','SEO title','SEO description',true);
+ INSERT INTO catalog.properties(id,tenant_id,title,locality,description,capacity,nightly_minor,currency,category_code,seo_title,seo_description,media,schema_managed)
+ VALUES(p,s,'Review listing','Antalya','Complete description',2,10000,'TRY','review-test','SEO title','SEO description',
+        '["https://example.invalid/review-fixture.jpg"]'::jsonb,true);
  SELECT version INTO v FROM catalog.properties WHERE id=p;
  SET LOCAL ROLE nexus_app;
  PERFORM set_config('app.tenant_id',s::text,true); PERFORM set_config('app.actor_id',su::text,true);

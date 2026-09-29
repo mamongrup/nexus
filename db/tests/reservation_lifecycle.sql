@@ -7,7 +7,13 @@ DECLARE s uuid:=gen_random_uuid(); a uuid:=gen_random_uuid(); n uuid:=gen_random
 BEGIN
  INSERT INTO core.organizations(id,legal_name,kind) VALUES(s,'Test supplier','supplier'),(a,'Test agency','agency'),(n,'Test nexus','nexus'),(stranger,'Other agency','agency');
  INSERT INTO auth.users(id,tenant_id,email,password_hash,display_name) VALUES(su,s,s||'@test.local','disabled','S'),(au,a,a||'@test.local','disabled','A'),(nu,n,n||'@test.local','disabled','N'),(xu,stranger,stranger||'@test.local','disabled','X');
- INSERT INTO catalog.properties(id,tenant_id,title,locality,capacity,nightly_minor,currency,status) VALUES(p,s,'Reservation fixture','Test',2,10000,'TRY','published');
+ INSERT INTO onboarding.applications(owner_user_id,tenant_id,category_code,legal_name,status,identity_status)
+ VALUES(su,s,'hotel','Test supplier','approved','verified');
+ INSERT INTO catalog.properties(id,tenant_id,title,description,locality,capacity,nightly_minor,currency,category_code,attributes,seo_title,seo_description,media,status)
+ VALUES(p,s,'Reservation fixture','Reservation lifecycle test listing','Test',2,10000,'TRY','hotel',
+        '{"room_type":"double","property_type":"hotel","room_types":"double","board_type":"room_only","check_in_time":"14:00","check_out_time":"11:00"}'::jsonb,
+        'Reservation fixture','Reservation lifecycle test listing',
+        '["https://example.invalid/reservation-fixture.jpg"]'::jsonb,'published');
  PERFORM set_config('app.tenant_id',s::text,true),set_config('app.actor_id',su::text,true);
  IF inventory.configure(p::text,d::text,(d+2)::text,10000,false)<>'ok' THEN RAISE EXCEPTION 'Configure failed'; END IF;
  PERFORM set_config('app.tenant_id',a::text,true),set_config('app.actor_id',au::text,true);

@@ -1475,3 +1475,12 @@ h3.section-title-with-icon .huge-icon {
   .workspace .panel-head { padding:13px 15px; }
   .workspace h2 { font-size:1.1rem; }
 }
+.control-check-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(250px,1fr)); gap:16px; margin-top:22px; }
+.control-check-card { padding:20px; border:1px solid #dfe7e4; border-radius:18px; background:#fff; box-shadow:0 4px 18px rgba(18,53,44,.05); }
+.control-check-heading { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; }
+.control-check-heading h2 { font-size:16px; margin:0; }
+.control-check-heading span { border-radius:999px; padding:5px 9px; font-size:11px; font-weight:700; white-space:nowrap; }
+.control-ok { background:#e6f6ee; color:#137854; }
+.control-attention { background:#fff1d8; color:#86520b; }
+.control-check-metric { display:block; margin-top:16px; font-size:24px; }
+.control-check-card p { min-height:38px; }

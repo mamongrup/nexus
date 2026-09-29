@@ -39,6 +39,16 @@ function Http-Req {
   }
 }
 
+function Demo-Password([string]$EnvKey) {
+  $configured = [Environment]::GetEnvironmentVariable($EnvKey)
+  if ($configured) { return $configured }
+  if ($env:ALLOW_DEMO_PASSWORDS -eq 'true') { return 'password123' }
+  throw "$EnvKey is required. Set ALLOW_DEMO_PASSWORDS=true only for disposable local demo accounts."
+}
+
+$adminPass = Demo-Password 'ADMIN_PASSWORD'
+$subUserPass = Demo-Password 'PLATFORM_SUBUSER_PASSWORD'
+
 # ------------------------------------------------------------
 # 1. Super Admin Owner Login
 # ------------------------------------------------------------
@@ -47,7 +57,6 @@ $adminSession = New-Object Microsoft.PowerShell.Commands.WebRequestSession
 $r = Http-Req "$BaseUrl/login" -WebSession $adminSession
 $csrf = Csrf $r.Content
 
-$adminPass = if ($env:ADMIN_PASSWORD) { $env:ADMIN_PASSWORD } else { "password123" }
 $r = Http-Req "$BaseUrl/login" -Method Post -WebSession $adminSession -Headers @{Origin = $BaseUrl} -Body @{
   csrf = $csrf
   email = "admin@nexus.local"
@@ -98,7 +107,7 @@ $r = Http-Req "$BaseUrl/admin/users" -Method Post -WebSession $adminSession -Hea
   name = "Gulsah Kalite Denetcisi"
   email = "kalite-denetim@nexus.local"
   role = "content_moderator"
-  password = "password123"
+  password = $subUserPass
 }
 if ($r.StatusCode -ne 200 -and $r.StatusCode -ne 302) { throw "Failed to create new sub-user" }
 Write-Host " [PASS] Created new platform sub-user (kalite-denetim@nexus.local) as content_moderator." -ForegroundColor Green
@@ -113,7 +122,7 @@ $csrf = Csrf $r.Content
 $r = Http-Req "$BaseUrl/login" -Method Post -WebSession $opSession -Headers @{Origin = $BaseUrl} -Body @{
   csrf = $csrf
   email = "operasyon@nexus.local"
-  password = "password123"
+  password = $subUserPass
 }
 if ($r.StatusCode -ne 200) { throw "operasyon@nexus.local login failed" }
 Write-Host " [PASS] Operasyon Direktörü logged in." -ForegroundColor Green
@@ -144,7 +153,7 @@ $csrf = Csrf $r.Content
 $r = Http-Req "$BaseUrl/login" -Method Post -WebSession $modSession -Headers @{Origin = $BaseUrl} -Body @{
   csrf = $csrf
   email = "moderator@nexus.local"
-  password = "password123"
+  password = $subUserPass
 }
 if ($r.StatusCode -ne 200) { throw "moderator@nexus.local login failed" }
 Write-Host " [PASS] İlan Moderatörü logged in." -ForegroundColor Green
@@ -183,7 +192,7 @@ $csrf = Csrf $r.Content
 $r = Http-Req "$BaseUrl/login" -Method Post -WebSession $finSession -Headers @{Origin = $BaseUrl} -Body @{
   csrf = $csrf
   email = "finans@nexus.local"
-  password = "password123"
+  password = $subUserPass
 }
 if ($r.StatusCode -ne 200) { throw "finans@nexus.local login failed" }
 Write-Host " [PASS] Finans Müdürü logged in." -ForegroundColor Green
@@ -221,7 +230,7 @@ $csrf = Csrf $r.Content
 $r = Http-Req "$BaseUrl/login" -Method Post -WebSession $onbSession -Headers @{Origin = $BaseUrl} -Body @{
   csrf = $csrf
   email = "onboarding@nexus.local"
-  password = "password123"
+  password = $subUserPass
 }
 if ($r.StatusCode -ne 200) { throw "onboarding@nexus.local login failed" }
 Write-Host " [PASS] Onboarding Uzmanı logged in." -ForegroundColor Green
@@ -251,7 +260,7 @@ $csrf = Csrf $r.Content
 $r = Http-Req "$BaseUrl/login" -Method Post -WebSession $aiSession -Headers @{Origin = $BaseUrl} -Body @{
   csrf = $csrf
   email = "ai-muhendis@nexus.local"
-  password = "password123"
+  password = $subUserPass
 }
 if ($r.StatusCode -ne 200) { throw "ai-muhendis@nexus.local login failed" }
 Write-Host " [PASS] AI & Fiyatlama Mühendisi logged in." -ForegroundColor Green
@@ -280,7 +289,7 @@ $csrf = Csrf $r.Content
 $r = Http-Req "$BaseUrl/login" -Method Post -WebSession $supSession -Headers @{Origin = $BaseUrl} -Body @{
   csrf = $csrf
   email = "destek@nexus.local"
-  password = "password123"
+  password = $subUserPass
 }
 if ($r.StatusCode -ne 200) { throw "destek@nexus.local login failed" }
 Write-Host " [PASS] Destek Sorumlusu logged in." -ForegroundColor Green

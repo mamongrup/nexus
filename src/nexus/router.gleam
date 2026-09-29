@@ -1,5 +1,6 @@
 import envoy
 import gleam/bit_array
+import gleam/dict
 import gleam/dynamic/decode
 import gleam/float
 import gleam/http
@@ -9,8 +10,10 @@ import gleam/json
 import gleam/list
 import gleam/result
 import gleam/string
+import gleam/time/timestamp
 import lustre/element.{text}
 import nexus/accounting_view
+import nexus/agency_callback
 import nexus/ai_generator
 import nexus/ai_governance
 import nexus/ai_hub_view
@@ -38,12 +41,14 @@ import nexus/marketplace_view
 import nexus/modules_view
 import nexus/onboarding_view
 import nexus/partners_view
+import nexus/platform_control_view
 import nexus/quality_view
 import nexus/rateshopper_view
 import nexus/settings
 import nexus/site
 import nexus/social_media_view
 import nexus/storage
+import nexus/supplier_performance_view
 import nexus/tours_view
 import nexus/users_view
 import nexus/view
@@ -56,7 +61,14 @@ pub fn handle(
   conn: pog.Connection,
   origin: String,
 ) -> wisp.Response {
-  case req.host == "127.0.0.1" || req.host == "localhost" {
+  let allowed_host = case envoy.get("APP_ENV") {
+    Ok("production") -> {
+      let public_host = envoy.get("APP_PUBLIC_HOST") |> result.unwrap("")
+      req.host == public_host
+    }
+    _ -> req.host == "127.0.0.1" || req.host == "localhost"
+  }
+  case allowed_host {
     False -> wisp.response(403) |> wisp.string_body("Forbidden host")
     True -> {
       use <- wisp.rescue_crashes
@@ -82,6 +94,67 @@ fn html(body: String) {
   wisp.ok() |> wisp.html_body(body)
 }
 
+const security_rate_limit_cache_key = "nexus:security_rate_limits"
+
+@external(erlang, "persistent_term", "get")
+fn cache_get(key: String, default: a) -> a
+
+@external(erlang, "persistent_term", "put")
+fn cache_put(key: String, value: a) -> Nil
+
+fn request_client_id(req: wisp.Request) -> String {
+  let forwarded =
+    request.get_header(req, "x-forwarded-for")
+    |> result.unwrap("")
+    |> first_csv_value
+  case forwarded {
+    "" ->
+      request.get_header(req, "cf-connecting-ip")
+      |> result.unwrap("")
+      |> string.trim
+      |> fallback("unknown")
+    value -> value
+  }
+}
+
+fn first_csv_value(value: String) -> String {
+  value
+  |> string.split(",")
+  |> list.first
+  |> result.unwrap("")
+  |> string.trim
+}
+
+fn fallback(value: String, default: String) -> String {
+  case value == "" {
+    True -> default
+    False -> value
+  }
+}
+
+fn rate_limited(key: String, limit: Int, window_ms: Float) -> Bool {
+  let now_ms = timestamp.to_unix_seconds(timestamp.system_time()) *. 1000.0
+  let cache: dict.Dict(String, #(Float, Int)) =
+    cache_get(security_rate_limit_cache_key, dict.new())
+  case dict.get(cache, key) {
+    Ok(#(window_start, count)) if now_ms -. window_start <. window_ms -> {
+      let blocked = count >= limit
+      cache_put(
+        security_rate_limit_cache_key,
+        dict.insert(cache, key, #(window_start, count + 1)),
+      )
+      blocked
+    }
+    _ -> {
+      cache_put(
+        security_rate_limit_cache_key,
+        dict.insert(cache, key, #(now_ms, 1)),
+      )
+      False
+    }
+  }
+}
+
 fn fail() {
   wisp.response(503)
   |> wisp.set_header("content-type", "text/html; charset=utf-8")
@@ -102,23 +175,212 @@ fn category_or_default(category: String) {
   }
 }
 
-fn agency_request_key_ok(req: wisp.Request) -> Bool {
-  let secret = case envoy.get("NEXUS_CONFIG_KEY") {
-    Ok(s) -> Ok(s)
-    Error(_) -> envoy.get("NEXUS_API_KEY")
-  }
-  case secret {
-    Ok(s) -> {
-      let auth_hdr = request.get_header(req, "authorization")
-      let api_hdr = request.get_header(req, "x-nexus-api-key")
-      case auth_hdr, api_hdr {
-        Ok(val), _ if val == "Bearer " <> s || val == s -> True
-        _, Ok(val) if val == s -> True
-        _, _ -> False
+fn send_agency_connection_approval(
+  conn: pog.Connection,
+  request_id: String,
+  api_key: String,
+  callback_key: String,
+) -> Result(String, String) {
+  case string.trim(callback_key) {
+    "" -> Error("NEXUS_API_KEY boş")
+    key -> {
+      let decoder = {
+        use agency_id <- decode.field(0, decode.string)
+        use agency_endpoint <- decode.field(1, decode.string)
+        decode.success(#(agency_id, agency_endpoint))
+      }
+      case
+        pog.query(
+          "select agency_id::text, agency_endpoint from partners.connection_requests where id::text=$1 limit 1",
+        )
+        |> pog.parameter(pog.text(request_id))
+        |> pog.returning(decoder)
+        |> pog.execute(conn)
+      {
+        Error(_) -> Error("bağlantı isteği okunamadı")
+        Ok(result) ->
+          case list.first(result.rows) {
+            Error(_) -> Error("bağlantı isteği bulunamadı")
+            Ok(#(agency_id, agency_endpoint)) ->
+              agency_callback.post_connection_approved(
+                agency_endpoint,
+                agency_id,
+                api_key,
+                key,
+              )
+          }
       }
     }
+  }
+}
+
+fn record_agency_connection_callback(
+  conn: pog.Connection,
+  request_id: String,
+  status: String,
+  error: String,
+) -> Nil {
+  let _ =
+    pog.query(
+      "insert into partners.agency_connection_callbacks(
+         request_id,agency_id,agency_endpoint,status,attempts,last_error,
+         last_attempt_at,next_attempt_at,updated_at
+       )
+       select id,agency_id,agency_endpoint,$2,1,left($3,2000),now(),
+              case when $2='sent' then null else now()+interval '15 minutes' end,
+              now()
+         from partners.connection_requests
+        where id::text=$1
+       on conflict(request_id) do update set
+         agency_id=excluded.agency_id,
+         agency_endpoint=excluded.agency_endpoint,
+         status=excluded.status,
+         attempts=partners.agency_connection_callbacks.attempts+1,
+         last_error=excluded.last_error,
+         last_attempt_at=now(),
+         next_attempt_at=case when excluded.status='sent' then null else now()+interval '15 minutes' end,
+         updated_at=now()",
+    )
+    |> pog.parameter(pog.text(request_id))
+    |> pog.parameter(pog.text(status))
+    |> pog.parameter(pog.text(error))
+    |> pog.execute(conn)
+  Nil
+}
+
+fn retry_agency_connection_callback(
+  conn: pog.Connection,
+  s: domain.Session,
+  request_id: String,
+) -> String {
+  let callback_key = envoy.get("NEXUS_API_KEY") |> result.unwrap("")
+  let api_key =
+    calendar.command(
+      conn,
+      s,
+      "select partners.issue_agency_api_key(r.agency_id,'default')
+         from partners.connection_requests r
+        where r.id::text=$1 and r.status='approved'
+        limit 1",
+      [pog.text(request_id)],
+    )
+    |> result.unwrap("failed")
+  case string.starts_with(api_key, "nx_") {
+    False -> api_key
+    True ->
+      case
+        send_agency_connection_approval(conn, request_id, api_key, callback_key)
+      {
+        Ok(_) -> {
+          record_agency_connection_callback(conn, request_id, "sent", "")
+          "agency_callback_sent"
+        }
+        Error(reason) -> {
+          record_agency_connection_callback(conn, request_id, "failed", reason)
+          "agency_callback_failed:" <> reason
+        }
+      }
+  }
+}
+
+fn agency_request_key_ok(req: wisp.Request) -> Bool {
+  let config_key = envoy.get("NEXUS_CONFIG_KEY") |> result.unwrap("")
+  let api_key = envoy.get("NEXUS_API_KEY") |> result.unwrap("")
+  let auth_hdr = request.get_header(req, "authorization") |> result.unwrap("")
+  let api_hdr = request.get_header(req, "x-nexus-api-key") |> result.unwrap("")
+  let key_matches = fn(value: String, key: String) {
+    key != "" && { value == key || value == "Bearer " <> key }
+  }
+  let ok =
+    key_matches(auth_hdr, config_key)
+    || key_matches(auth_hdr, api_key)
+    || key_matches(api_hdr, config_key)
+    || key_matches(api_hdr, api_key)
+  case ok {
+    True -> True
+    False -> {
+      let key =
+        "agency-request-key:"
+        <> request_client_id(req)
+        <> ":"
+        <> string.slice(auth_hdr <> api_hdr, 0, 64)
+      case rate_limited(key, 30, 300_000.0) {
+        True -> False
+        False -> False
+      }
+    }
+  }
+}
+
+fn bearer_value(value: String) -> String {
+  let trimmed = string.trim(value)
+  case string.starts_with(trimmed, "Bearer ") {
+    True -> string.drop_start(trimmed, 7) |> string.trim
+    False -> trimmed
+  }
+}
+
+fn request_api_key(req: wisp.Request) -> String {
+  let auth_hdr = request.get_header(req, "authorization") |> result.unwrap("")
+  let api_hdr = request.get_header(req, "x-nexus-api-key") |> result.unwrap("")
+  case bearer_value(api_hdr) {
+    "" -> bearer_value(auth_hdr)
+    key -> key
+  }
+}
+
+fn agency_api_key_required(conn: pog.Connection, agency_id: String) -> Bool {
+  case
+    pog.query("select partners.agency_api_key_required($1)")
+    |> pog.parameter(pog.text(agency_id))
+    |> pog.returning(decode.field(0, decode.bool, decode.success))
+    |> pog.execute(conn)
+  {
+    Ok(res) -> list.first(res.rows) |> result.unwrap(False)
+    Error(_) -> True
+  }
+}
+
+fn agency_api_key_ok(
+  conn: pog.Connection,
+  agency_id: String,
+  key: String,
+) -> Bool {
+  case
+    pog.query("select partners.agency_api_key_ok($1,$2)")
+    |> pog.parameter(pog.text(agency_id))
+    |> pog.parameter(pog.text(key))
+    |> pog.returning(decode.field(0, decode.bool, decode.success))
+    |> pog.execute(conn)
+  {
+    Ok(res) -> list.first(res.rows) |> result.unwrap(False)
     Error(_) -> False
   }
+}
+
+fn agency_request_authorized(
+  req: wisp.Request,
+  conn: pog.Connection,
+  agency_id: String,
+) -> Bool {
+  case string.trim(agency_id) {
+    "" -> False
+    _ -> {
+      let key = request_api_key(req)
+      case agency_api_key_required(conn, agency_id) {
+        True -> agency_api_key_ok(conn, agency_id, key)
+        False -> agency_request_key_ok(req)
+      }
+    }
+  }
+}
+
+fn agency_id_from_json_payload(body: String) -> String {
+  json.parse(
+    from: body,
+    using: decode.field("agency_id", decode.string, decode.success),
+  )
+  |> result.unwrap("")
 }
 
 fn single_string_decoder() {
@@ -274,8 +536,7 @@ fn route(
         }
       }
     }
-    http.Get, ["api", "v1", "feed", "listings"] ->
-      api_feed_listings(req, conn)
+    http.Get, ["api", "v1", "feed", "listings"] -> api_feed_listings(req, conn)
     http.Get, ["v1", "feed", "listings"] -> api_feed_listings(req, conn)
     http.Get, ["api", "v1", "contract", "categories"] ->
       api_contract_categories(req, conn)
@@ -283,16 +544,12 @@ fn route(
       api_contract_categories(req, conn)
     http.Get, ["api", "v1", "contract", "state"] ->
       api_contract_state(req, conn)
-    http.Get, ["v1", "contract", "state"] ->
-      api_contract_state(req, conn)
-    http.Get, ["api", "v1", "contract", "filters"] ->
-      api_contract_filters(conn)
-    http.Get, ["v1", "contract", "filters"] ->
-      api_contract_filters(conn)
+    http.Get, ["v1", "contract", "state"] -> api_contract_state(req, conn)
+    http.Get, ["api", "v1", "contract", "filters"] -> api_contract_filters(conn)
+    http.Get, ["v1", "contract", "filters"] -> api_contract_filters(conn)
     http.Get, ["api", "v1", "feed", "inventory"] ->
       api_feed_inventory(req, conn)
-    http.Get, ["v1", "feed", "inventory"] ->
-      api_feed_inventory(req, conn)
+    http.Get, ["v1", "feed", "inventory"] -> api_feed_inventory(req, conn)
     http.Post, ["api", "v1", "webhooks", "reservations"] ->
       api_webhook_reservations(req, conn)
     http.Post, ["v1", "webhooks", "reservations"] ->
@@ -426,18 +683,41 @@ fn route(
     http.Post, ["login"] -> {
       use fields <- authorized_form(req, csrf, origin)
       let token = wisp.random_string(48)
+      let email = field(fields, "email")
       case
-        db.login(conn, field(fields, "email"), field(fields, "password"), token)
+        rate_limited(
+          "login:"
+            <> string.lowercase(string.trim(email))
+            <> ":"
+            <> request_client_id(req),
+          12,
+          300_000.0,
+        )
       {
         True ->
-          wisp.redirect("/admin")
-          |> wisp.set_cookie(req, "nexus_session", token, wisp.Signed, 28_800)
-        False ->
-          wisp.response(401)
+          wisp.response(429)
           |> wisp.html_body(view.login(
             csrf,
-            "Giriş yapılamadı. Bilgilerini kontrol et; çok sayıda denemede hesap kısa süreli kilitlenir.",
+            "Çok fazla deneme yapıldı. Lütfen birkaç dakika sonra tekrar deneyin.",
           ))
+        False ->
+          case db.login(conn, email, field(fields, "password"), token) {
+            True ->
+              wisp.redirect("/admin")
+              |> wisp.set_cookie(
+                req,
+                "nexus_session",
+                token,
+                wisp.Signed,
+                28_800,
+              )
+            False ->
+              wisp.response(401)
+              |> wisp.html_body(view.login(
+                csrf,
+                "Giriş yapılamadı. Bilgilerini kontrol et; çok sayıda denemede hesap kısa süreli kilitlenir.",
+              ))
+          }
       }
     }
     _, ["admin", ..] | _, ["logout"] -> admin(req, conn, csrf, origin)
@@ -531,13 +811,15 @@ fn category_filters_json(conn: pog.Connection, s: domain.Session) {
 }
 
 fn api_feed_listings(req: wisp.Request, conn: pog.Connection) -> wisp.Response {
-  case agency_request_key_ok(req) {
+  let query = wisp.get_query(req)
+  let agency_id = field(query, "agency_id")
+  case agency_request_authorized(req, conn, agency_id) {
     False ->
       wisp.response(401)
-      |> wisp.json_body("{\"ok\":false,\"error\":\"Geçersiz yetkilendirme anahtarı\"}")
+      |> wisp.json_body(
+        "{\"ok\":false,\"error\":\"Geçersiz yetkilendirme anahtarı\"}",
+      )
     True -> {
-      let query = wisp.get_query(req)
-      let agency_id = field(query, "agency_id")
       let category = field(query, "category")
       let locality = field(query, "locality")
       let q = field(query, "q")
@@ -546,107 +828,161 @@ fn api_feed_listings(req: wisp.Request, conn: pog.Connection) -> wisp.Response {
         use id <- decode.field(0, decode.string)
         use title <- decode.field(1, decode.string)
         use loc <- decode.field(2, decode.string)
-        use cat <- decode.field(3, decode.string)
-        use cap <- decode.field(4, decode.string)
-        use prc <- decode.field(5, decode.string)
-        use curr <- decode.field(6, decode.string)
-        use desc <- decode.field(7, decode.string)
-        use imgs <- decode.field(8, decode.string)
-        decode.success(#(id, title, loc, cat, cap, prc, curr, desc, imgs))
+        use region <- decode.field(3, decode.string)
+        use cat <- decode.field(4, decode.string)
+        use cap <- decode.field(5, decode.string)
+        use prc <- decode.field(6, decode.string)
+        use curr <- decode.field(7, decode.string)
+        use desc <- decode.field(8, decode.string)
+        use short_desc <- decode.field(9, decode.string)
+        use imgs <- decode.field(10, decode.string)
+        use contract_fields <- decode.field(11, decode.string)
+        use price_unit <- decode.field(12, decode.string)
+        use availability_mode <- decode.field(13, decode.string)
+        use contact_policy <- decode.field(14, decode.string)
+        use cancellation_policy <- decode.field(15, decode.string)
+        decode.success(#(
+          id,
+          title,
+          loc,
+          region,
+          cat,
+          cap,
+          prc,
+          curr,
+          desc,
+          short_desc,
+          imgs,
+          contract_fields,
+          price_unit,
+          availability_mode,
+          contact_policy,
+          cancellation_policy,
+        ))
       }
 
-      let rows_res = case agency_id != "" {
-        True -> {
-          let scoped =
-            pog.query(
-              "select id,title,locality,category,capacity,price,currency,description,images::text from catalog.marketplace_listings_for_agency($1)",
-            )
+      case agency_id == "" {
+        True ->
+          wisp.response(400)
+          |> wisp.json_body(
+            "{\"ok\":false,\"error\":\"agency_id parametresi gereklidir\"}",
+          )
+        False -> {
+          // Feed hem onaylı acente politikasına hem de aktif tedarikçi-acente
+          // bağlantısına bağlıdır. Boş sonuç hiçbir zaman genel kataloğa düşmez.
+          let rows_res =
+            pog.query("select * from catalog.agency_listing_feed($1,$2,$3,$4)")
             |> pog.parameter(pog.text(agency_id))
+            |> pog.parameter(pog.text(category))
+            |> pog.parameter(pog.text(locality))
+            |> pog.parameter(pog.text(q))
             |> pog.returning(listing_decoder)
             |> pog.execute(conn)
-          case scoped {
-            Ok(res) if res.rows != [] -> Ok(res.rows)
-            _ ->
-              pog.query(
-                "select id,title,locality,category,capacity,price,currency,description,images::text from catalog.marketplace_listings_v2($1,$2,$3)",
+            |> result.map(fn(r) { r.rows })
+
+          case rows_res {
+            Ok(rows) -> {
+              let listings_json =
+                "["
+                <> {
+                  rows
+                  |> list.map(fn(row) {
+                    let #(
+                      id,
+                      title,
+                      loc,
+                      region,
+                      cat,
+                      cap,
+                      prc,
+                      curr,
+                      desc,
+                      short_desc,
+                      imgs,
+                      contract_fields,
+                      price_unit,
+                      availability_mode,
+                      contact_policy,
+                      cancellation_policy,
+                    ) = row
+                    let clean_imgs = case string.trim(imgs) {
+                      "" -> "[]"
+                      other -> other
+                    }
+                    let clean_contract_fields = case
+                      string.trim(contract_fields)
+                    {
+                      "" -> "{}"
+                      other -> other
+                    }
+                    "{\"id\":"
+                    <> { json.string(id) |> json.to_string }
+                    <> ",\"title\":"
+                    <> { json.string(title) |> json.to_string }
+                    <> ",\"locality\":"
+                    <> { json.string(loc) |> json.to_string }
+                    <> ",\"region\":"
+                    <> { json.string(region) |> json.to_string }
+                    <> ",\"category\":"
+                    <> { json.string(cat) |> json.to_string }
+                    <> ",\"capacity\":"
+                    <> { json.string(cap) |> json.to_string }
+                    <> ",\"price\":"
+                    <> { json.string(prc) |> json.to_string }
+                    <> ",\"currency\":"
+                    <> { json.string(curr) |> json.to_string }
+                    <> ",\"description\":"
+                    <> { json.string(desc) |> json.to_string }
+                    <> ",\"shortDescription\":"
+                    <> { json.string(short_desc) |> json.to_string }
+                    <> ",\"images\":"
+                    <> clean_imgs
+                    <> ",\"images_json\":"
+                    <> { json.string(clean_imgs) |> json.to_string }
+                    <> ",\"contractFields\":"
+                    <> clean_contract_fields
+                    <> ",\"contractFieldsJson\":"
+                    <> { json.string(clean_contract_fields) |> json.to_string }
+                    <> ",\"priceUnit\":"
+                    <> { json.string(price_unit) |> json.to_string }
+                    <> ",\"availabilityMode\":"
+                    <> { json.string(availability_mode) |> json.to_string }
+                    <> ",\"contactPolicy\":"
+                    <> { json.string(contact_policy) |> json.to_string }
+                    <> ",\"cancellationPolicy\":"
+                    <> { json.string(cancellation_policy) |> json.to_string }
+                    <> "}"
+                  })
+                  |> string.join(",")
+                }
+                <> "]"
+
+              let response_body =
+                "{\"ok\":true,\"contract_version\":\"1.1.0\",\"count\":"
+                <> int.to_string(list.length(rows))
+                <> ",\"listings\":"
+                <> listings_json
+                <> "}"
+
+              wisp.ok()
+              |> wisp.json_body(response_body)
+            }
+            Error(_) ->
+              wisp.response(500)
+              |> wisp.json_body(
+                "{\"ok\":false,\"error\":\"İlanlar okunamadı\"}",
               )
-              |> pog.parameter(pog.text(q))
-              |> pog.parameter(pog.text(category))
-              |> pog.parameter(pog.text(locality))
-              |> pog.returning(listing_decoder)
-              |> pog.execute(conn)
-              |> result.map(fn(r) { r.rows })
           }
         }
-        False ->
-          pog.query(
-            "select id,title,locality,category,capacity,price,currency,description,images::text from catalog.marketplace_listings_v2($1,$2,$3)",
-          )
-          |> pog.parameter(pog.text(q))
-          |> pog.parameter(pog.text(category))
-          |> pog.parameter(pog.text(locality))
-          |> pog.returning(listing_decoder)
-          |> pog.execute(conn)
-          |> result.map(fn(r) { r.rows })
-      }
-
-      case rows_res {
-        Ok(rows) -> {
-          let listings_json =
-            "["
-            <> {
-              rows
-              |> list.map(fn(row) {
-                let #(id, title, loc, cat, cap, prc, curr, desc, imgs) = row
-                let clean_imgs = case string.trim(imgs) {
-                  "" -> "[]"
-                  other -> other
-                }
-                "{\"id\":"
-                <> { json.string(id) |> json.to_string }
-                <> ",\"title\":"
-                <> { json.string(title) |> json.to_string }
-                <> ",\"locality\":"
-                <> { json.string(loc) |> json.to_string }
-                <> ",\"category\":"
-                <> { json.string(cat) |> json.to_string }
-                <> ",\"capacity\":"
-                <> { json.string(cap) |> json.to_string }
-                <> ",\"price\":"
-                <> { json.string(prc) |> json.to_string }
-                <> ",\"currency\":"
-                <> { json.string(curr) |> json.to_string }
-                <> ",\"description\":"
-                <> { json.string(desc) |> json.to_string }
-                <> ",\"images\":"
-                <> clean_imgs
-                <> ",\"images_json\":"
-                <> { json.string(clean_imgs) |> json.to_string }
-                <> "}"
-              })
-              |> string.join(",")
-            }
-            <> "]"
-
-          let response_body =
-            "{\"ok\":true,\"contract_version\":\"2.0\",\"count\":"
-            <> int.to_string(list.length(rows))
-            <> ",\"listings\":"
-            <> listings_json
-            <> "}"
-
-          wisp.ok()
-          |> wisp.json_body(response_body)
-        }
-        Error(_) ->
-          wisp.response(500)
-          |> wisp.json_body("{\"ok\":false,\"error\":\"İlanlar okunamadı\"}")
       }
     }
   }
 }
 
-fn api_contract_state(req: wisp.Request, conn: pog.Connection) -> wisp.Response {
+fn api_contract_state(
+  req: wisp.Request,
+  conn: pog.Connection,
+) -> wisp.Response {
   let _ = req
   let decoder = {
     use key <- decode.field(0, decode.string)
@@ -686,7 +1022,9 @@ fn api_contract_state(req: wisp.Request, conn: pog.Connection) -> wisp.Response 
     }
     Error(_) ->
       wisp.response(500)
-      |> wisp.json_body("{\"ok\":false,\"error\":\"Sözleşme durumu okunamadı\"}")
+      |> wisp.json_body(
+        "{\"ok\":false,\"error\":\"Sözleşme durumu okunamadı\"}",
+      )
   }
 }
 
@@ -774,34 +1112,43 @@ fn api_contract_filters(conn: pog.Connection) -> wisp.Response {
     }
     Error(_) ->
       wisp.response(500)
-      |> wisp.json_body("{\"ok\":false,\"error\":\"Kategori filtreleri okunamadı\"}")
+      |> wisp.json_body(
+        "{\"ok\":false,\"error\":\"Kategori filtreleri okunamadı\"}",
+      )
   }
 }
 
-fn api_feed_inventory(req: wisp.Request, conn: pog.Connection) -> wisp.Response {
-  case agency_request_key_ok(req) {
+fn api_feed_inventory(
+  req: wisp.Request,
+  conn: pog.Connection,
+) -> wisp.Response {
+  let query = wisp.get_query(req)
+  let listing_id = field(query, "listing_id")
+  let agency_id = field(query, "agency_id")
+  case agency_request_authorized(req, conn, agency_id) {
     False ->
       wisp.response(401)
-      |> wisp.json_body("{\"ok\":false,\"error\":\"Geçersiz yetkilendirme anahtarı\"}")
+      |> wisp.json_body(
+        "{\"ok\":false,\"error\":\"Geçersiz yetkilendirme anahtarı\"}",
+      )
     True -> {
-      let query = wisp.get_query(req)
-      let listing_id = field(query, "listing_id")
       let decoder = {
-        use day_date <- decode.field(0, decode.string)
+        use service_date <- decode.field(0, decode.string)
         use status <- decode.field(1, decode.string)
         use price_minor <- decode.field(2, decode.int)
-        decode.success(#(day_date, status, price_minor))
+        decode.success(#(service_date, status, price_minor))
       }
-      case listing_id != "" {
+      case listing_id != "" && agency_id != "" {
         False ->
           wisp.response(400)
-          |> wisp.json_body("{\"ok\":false,\"error\":\"listing_id parametresi gereklidir\"}")
+          |> wisp.json_body(
+            "{\"ok\":false,\"error\":\"listing_id ve agency_id parametreleri gereklidir\"}",
+          )
         True -> {
           case
-            pog.query(
-              "select day_date::text, status, price_minor from inventory.days where resource_id in (select id from inventory.resources where property_id = $1::uuid) order by day_date limit 365",
-            )
+            pog.query("select * from inventory.agency_inventory_feed($2,$1)")
             |> pog.parameter(pog.text(listing_id))
+            |> pog.parameter(pog.text(agency_id))
             |> pog.returning(decoder)
             |> pog.execute(conn)
           {
@@ -834,7 +1181,9 @@ fn api_feed_inventory(req: wisp.Request, conn: pog.Connection) -> wisp.Response 
             }
             Error(_) ->
               wisp.response(500)
-              |> wisp.json_body("{\"ok\":false,\"error\":\"Envanter okunamadı\"}")
+              |> wisp.json_body(
+                "{\"ok\":false,\"error\":\"Envanter okunamadı\"}",
+              )
           }
         }
       }
@@ -846,19 +1195,24 @@ fn api_webhook_reservations(
   req: wisp.Request,
   conn: pog.Connection,
 ) -> wisp.Response {
-  case agency_request_key_ok(req) {
-    False ->
-      wisp.response(401)
-      |> wisp.json_body("{\"ok\":false,\"error\":\"Geçersiz yetkilendirme anahtarı\"}")
-    True -> {
-      use body <- wisp.require_string_body(req)
-      case string.trim(body) {
-        "" ->
-          wisp.response(400)
-          |> wisp.json_body("{\"ok\":false,\"error\":\"Boş istek gövdesi\"}")
-        json_payload -> {
+  use body <- wisp.require_string_body(req)
+  case string.trim(body) {
+    "" ->
+      wisp.response(400)
+      |> wisp.json_body("{\"ok\":false,\"error\":\"Boş istek gövdesi\"}")
+    json_payload -> {
+      let agency_id = agency_id_from_json_payload(json_payload)
+      case agency_request_authorized(req, conn, agency_id) {
+        False ->
+          wisp.response(401)
+          |> wisp.json_body(
+            "{\"ok\":false,\"error\":\"Geçersiz yetkilendirme anahtarı\"}",
+          )
+        True -> {
           case
-            pog.query("select partners.receive_reservation_webhook_json($1::jsonb)")
+            pog.query(
+              "select partners.receive_reservation_webhook_json($1::jsonb)",
+            )
             |> pog.parameter(pog.text(json_payload))
             |> pog.returning(single_string_decoder())
             |> pog.execute(conn)
@@ -872,7 +1226,9 @@ fn api_webhook_reservations(
             }
             Error(_) ->
               wisp.response(500)
-              |> wisp.json_body("{\"ok\":false,\"error\":\"Rezervasyon webhook işlenemedi\"}")
+              |> wisp.json_body(
+                "{\"ok\":false,\"error\":\"Rezervasyon webhook işlenemedi\"}",
+              )
           }
         }
       }
@@ -916,6 +1272,8 @@ fn admin(
           ))
         False ->
           case req.method, path {
+            http.Get, ["admin", "control-center"] ->
+              platform_control_page(conn, s, csrf)
             http.Get, ["admin", "category-filters", "data"] ->
               category_filters_json(conn, s)
             http.Post, ["admin", "category-filters", "groups"] -> {
@@ -946,16 +1304,11 @@ fn admin(
                       ],
                     )
                     |> result.unwrap("failed")
-                  category_fields_page(
-                    conn,
-                    s,
-                    csrf,
-                    category,
-                    case answer {
-                      "failed" -> "Filtre grubu kaydedilemedi."
-                      _ -> "Filtre grubu kaydedildi ve çeviri kuyruğu güncellendi."
-                    },
-                  )
+                  category_fields_page(conn, s, csrf, category, case answer {
+                    "failed" -> "Filtre grubu kaydedilemedi."
+                    _ ->
+                      "Filtre grubu kaydedildi ve çeviri kuyruğu güncellendi."
+                  })
                 }
               }
             }
@@ -1013,16 +1366,11 @@ fn admin(
                       ],
                     )
                     |> result.unwrap("failed")
-                  category_fields_page(
-                    conn,
-                    s,
-                    csrf,
-                    category,
-                    case answer {
-                      "failed" -> "Filtre maddesi kaydedilemedi."
-                      _ -> "Filtre maddesi kaydedildi ve çeviri kuyruğu güncellendi."
-                    },
-                  )
+                  category_fields_page(conn, s, csrf, category, case answer {
+                    "failed" -> "Filtre maddesi kaydedilemedi."
+                    _ ->
+                      "Filtre maddesi kaydedildi ve çeviri kuyruğu güncellendi."
+                  })
                 }
               }
             }
@@ -1164,6 +1512,39 @@ fn admin(
               ai_page(conn, s, csrf, calendar.message(answer))
             }
             http.Get, ["admin", "finance"] -> finance_page(conn, s, csrf, "")
+            http.Get, ["admin", "supplier-performance"] -> {
+              case
+                s.workspace == "supplier"
+                && domain.can_access_supplier_permission(
+                  s.role,
+                  "supplier.reports.view",
+                )
+              {
+                False -> wisp.response(403)
+                True ->
+                  case
+                    calendar.rows(
+                      conn,
+                      s,
+                      "select * from onboarding.supplier_performance()",
+                    ),
+                    calendar.rows(
+                      conn,
+                      s,
+                      "select * from onboarding.supplier_settlement_totals()",
+                    )
+                  {
+                    Ok(metrics), Ok(settlements) ->
+                      html(supplier_performance_view.page(
+                        s,
+                        csrf,
+                        metrics,
+                        settlements,
+                      ))
+                    _, _ -> fail()
+                  }
+              }
+            }
             http.Get, ["admin", "pricing"] -> pricing_page(conn, s, csrf, "")
             http.Get, ["admin", "digital-twin"] ->
               digital_twin_page(conn, s, csrf, "")
@@ -1232,7 +1613,9 @@ fn admin(
               supplier_modules_page(conn, s, csrf, supplier_id, "")
             http.Get, ["admin", "modules", "ops", module_code] ->
               module_ops_page(conn, s, csrf, module_code, "")
-            http.Post, ["admin", "modules"] | http.Post, ["admin", "modules", "assign"] -> {
+            http.Post, ["admin", "modules"]
+            | http.Post, ["admin", "modules", "assign"]
+            -> {
               case domain.can_assign_modules(s.role) {
                 False -> wisp.response(403)
                 True -> {
@@ -1497,12 +1880,13 @@ fn admin(
                                 calendar.command(
                                   conn,
                                   s,
-                                  "select onboarding.register_document($1,$2,$3,$4)",
+                                  "select onboarding.register_document($1,$2,$3,$4,$5)",
                                   [
                                     pog.text(id),
                                     pog.text(field(form.values, "requirement")),
                                     pog.text("upload:" <> token),
                                     pog.text(original),
+                                    pog.text(field(form.values, "expires_on")),
                                   ],
                                 )
                                 |> result.unwrap("failed")
@@ -1636,6 +2020,7 @@ fn admin(
               ["admin", "partners", "connection-requests", id, "decide"]
             -> {
               use f <- authorized_form(req, csrf, origin)
+              let decision = field(f, "decision")
               let answer =
                 calendar.command(
                   conn,
@@ -1643,7 +2028,7 @@ fn admin(
                   "select partners.decide_connection_request($1,$2,$3,$4,$5)",
                   [
                     pog.text(id),
-                    pog.text(field(f, "decision")),
+                    pog.text(decision),
                     pog.text(field(f, "categories")),
                     pog.int(
                       int.parse(field(f, "listing_limit")) |> result.unwrap(100),
@@ -1652,6 +2037,48 @@ fn admin(
                   ],
                 )
                 |> result.unwrap("failed")
+              let message = case
+                decision == "approved"
+                && string.starts_with(answer, "agency_api_key:")
+              {
+                False -> calendar.message(answer)
+                True -> {
+                  let api_key = string.drop_start(answer, 15)
+                  let callback_key =
+                    envoy.get("NEXUS_API_KEY") |> result.unwrap("")
+                  let callback_result =
+                    send_agency_connection_approval(
+                      conn,
+                      id,
+                      api_key,
+                      callback_key,
+                    )
+                  case callback_result {
+                    Ok(_) -> {
+                      record_agency_connection_callback(conn, id, "sent", "")
+                      "Bağlantı onaylandı ve API anahtarı acenteye otomatik yazıldı."
+                    }
+                    Error(reason) -> {
+                      record_agency_connection_callback(
+                        conn,
+                        id,
+                        "failed",
+                        reason,
+                      )
+                      calendar.message(answer)
+                      <> " Acente callback hatası: "
+                      <> reason
+                    }
+                  }
+                }
+              }
+              connection_requests_page(conn, s, csrf, message)
+            }
+            http.Post,
+              ["admin", "partners", "connection-requests", id, "retry-callback"]
+            -> {
+              use _f <- authorized_form(req, csrf, origin)
+              let answer = retry_agency_connection_callback(conn, s, id)
               connection_requests_page(conn, s, csrf, calendar.message(answer))
             }
             http.Post, ["admin", "site", slug, "save"] -> {
@@ -1722,9 +2149,14 @@ fn admin(
                 True -> {
                   use _ <- authorized_form(req, csrf, origin)
                   let answer =
-                    calendar.command(conn, s, "select booking.confirm_request($1)", [
-                      pog.text(id),
-                    ])
+                    calendar.command(
+                      conn,
+                      s,
+                      "select booking.confirm_request($1)",
+                      [
+                        pog.text(id),
+                      ],
+                    )
                     |> result.unwrap("failed")
                   reservations_page(conn, s, csrf, calendar.message(answer))
                 }
@@ -1761,7 +2193,10 @@ fn admin(
               partners_page(conn, s, csrf, False, calendar.message(answer))
             }
             http.Post, ["admin", "requests"] -> {
-              case domain.can_manage_reservations(s.role) || s.workspace == "agency" {
+              case
+                domain.can_manage_reservations(s.role)
+                || s.workspace == "agency"
+              {
                 False -> wisp.response(403)
                 True -> {
                   use f <- authorized_form(req, csrf, origin)
@@ -1774,7 +2209,9 @@ fn admin(
                         pog.text(field(f, "property")),
                         pog.text(field(f, "start")),
                         pog.text(field(f, "end")),
-                        pog.int(int.parse(field(f, "minutes")) |> result.unwrap(0)),
+                        pog.int(
+                          int.parse(field(f, "minutes")) |> result.unwrap(0),
+                        ),
                         pog.text(field(f, "request_key")),
                       ],
                     )
@@ -1829,7 +2266,13 @@ fn admin(
                           ],
                         )
                         |> result.unwrap("failed")
-                      calendar_page(conn, s, csrf, False, calendar.message(outcome))
+                      calendar_page(
+                        conn,
+                        s,
+                        csrf,
+                        False,
+                        calendar.message(outcome),
+                      )
                     }
                   }
                 }
@@ -1872,9 +2315,14 @@ fn admin(
                 True -> {
                   use _ <- authorized_form(req, csrf, origin)
                   let outcome =
-                    calendar.command(conn, s, "select inventory.release_hold($1)", [
-                      pog.text(id),
-                    ])
+                    calendar.command(
+                      conn,
+                      s,
+                      "select inventory.release_hold($1)",
+                      [
+                        pog.text(id),
+                      ],
+                    )
                     |> result.unwrap("failed")
                   calendar_page(conn, s, csrf, True, calendar.message(outcome))
                 }
@@ -3600,7 +4048,9 @@ fn admin(
                   let phone = field(fields, "phone")
                   let template = field(fields, "template")
                   let content = field(fields, "content")
-                  case db.send_guest_whatsapp(conn, id, phone, template, content) {
+                  case
+                    db.send_guest_whatsapp(conn, id, phone, template, content)
+                  {
                     Ok(_) ->
                       wisp.redirect(
                         "/admin/listings/" <> id <> "/modules?f=wa_ok",
@@ -3629,7 +4079,9 @@ fn admin(
                     Ok(v) -> v * 100
                     Error(_) -> 100_000
                   }
-                  case db.generate_listing_invoice(conn, id, recipient, amount) {
+                  case
+                    db.generate_listing_invoice(conn, id, recipient, amount)
+                  {
                     Ok(_) ->
                       wisp.redirect(
                         "/admin/listings/" <> id <> "/modules?f=inv_ok",
@@ -3664,7 +4116,9 @@ fn admin(
                     Ok(v) -> v * 100
                     Error(_) -> 0
                   }
-                  case db.add_b2b_agency(conn, id, aname, acode, comm, allot, net) {
+                  case
+                    db.add_b2b_agency(conn, id, aname, acode, comm, allot, net)
+                  {
                     Ok(_) ->
                       wisp.redirect(
                         "/admin/listings/" <> id <> "/modules?f=b2b_ok",
@@ -3731,7 +4185,14 @@ fn admin(
                   let prio = field(fields, "priority")
                   let tech = field(fields, "technician")
                   case
-                    db.create_maintenance_ticket(conn, id, room, issue, prio, tech)
+                    db.create_maintenance_ticket(
+                      conn,
+                      id,
+                      room,
+                      issue,
+                      prio,
+                      tech,
+                    )
                   {
                     Ok(_) ->
                       wisp.redirect(
@@ -3895,7 +4356,9 @@ fn admin(
                   case db.resolve_concierge_request(conn, rid) {
                     Ok(_) ->
                       wisp.redirect(
-                        "/admin/listings/" <> id <> "/modules?f=concierge_res_ok",
+                        "/admin/listings/"
+                        <> id
+                        <> "/modules?f=concierge_res_ok",
                       )
                     _ -> fail()
                   }
@@ -4000,7 +4463,9 @@ fn admin(
                     field(fields, "amount_minor")
                     |> int.parse
                     |> result.unwrap(0)
-                  case db.post_room_folio_charge(conn, id, room, dept, desc, amt) {
+                  case
+                    db.post_room_folio_charge(conn, id, room, dept, desc, amt)
+                  {
                     Ok(_) ->
                       wisp.redirect(
                         "/admin/listings/" <> id <> "/modules?f=charge_ok",
@@ -4172,7 +4637,9 @@ fn admin(
                     )
                   {
                     Ok(_) ->
-                      wisp.redirect("/admin/listings/" <> id <> "/modules?f=msg_ok")
+                      wisp.redirect(
+                        "/admin/listings/" <> id <> "/modules?f=msg_ok",
+                      )
                     _ -> fail()
                   }
                 }
@@ -4309,7 +4776,13 @@ fn admin(
                         fields,
                       )
                     Ok(answer) ->
-                      listing_form(conn, s, csrf, calendar.message(answer), fields)
+                      listing_form(
+                        conn,
+                        s,
+                        csrf,
+                        calendar.message(answer),
+                        fields,
+                      )
                     Error(_) -> fail()
                   }
                 }
@@ -4410,6 +4883,27 @@ fn admin(
           }
       }
     }
+  }
+}
+
+fn platform_control_page(
+  conn: pog.Connection,
+  s: domain.Session,
+  csrf: String,
+) {
+  case s.workspace == "nexus" && s.role == "owner" {
+    False -> wisp.response(403)
+    True ->
+      case
+        calendar.rows(
+          conn,
+          s,
+          "select * from operations.platform_control_checks()",
+        )
+      {
+        Ok(rows) -> html(platform_control_view.page(s, csrf, rows))
+        Error(_) -> fail()
+      }
   }
 }
 
@@ -4544,11 +5038,23 @@ fn onboarding_page(
           conn,
           s,
           "select * from onboarding.documents_for_review()",
+        ),
+        calendar.rows(
+          conn,
+          s,
+          "select * from onboarding.expiring_documents(30)",
         )
       {
-        Ok(rows), Ok(documents) ->
-          html(onboarding_view.queue(s, csrf, rows, documents, message))
-        _, _ -> fail()
+        Ok(rows), Ok(documents), Ok(expiring) ->
+          html(onboarding_view.queue(
+            s,
+            csrf,
+            rows,
+            documents,
+            expiring,
+            message,
+          ))
+        _, _, _ -> fail()
       }
   }
 }
@@ -4809,12 +5315,14 @@ fn module_permission_allowed(
   s: domain.Session,
   module_code: String,
 ) -> Bool {
-  case calendar.rows_with(
-    conn,
-    s,
-    "select coalesce(array_to_string(permissions, ','), '') from onboarding.supplier_panel_module_contract_details() where code = $1",
-    [pog.text(module_code)],
-  ) {
+  case
+    calendar.rows_with(
+      conn,
+      s,
+      "select coalesce(array_to_string(permissions, ','), '') from onboarding.supplier_panel_module_contract_details() where code = $1",
+      [pog.text(module_code)],
+    )
+  {
     Ok([[permissions], ..]) ->
       domain.can_access_any_supplier_permission(s.role, permissions)
     _ -> False

@@ -11,6 +11,7 @@ pub fn queue(
   csrf: String,
   rows: List(List(String)),
   documents: List(List(String)),
+  expiring: List(List(String)),
   message: String,
 ) {
   view.shell(
@@ -63,13 +64,56 @@ pub fn queue(
                           ])
                         False ->
                           el("span", "badge muted", [text("Karar yetkisi yok")])
-                      }
+                      },
                     ]),
                   ])
                 _ -> text("")
               }
             }),
           ),
+        ]),
+      ]),
+      el("h2", "", [text("Süresi dolan veya yaklaşan belgeler")]),
+      el("section", "panel table-scroll", [
+        el("p", "muted", [
+          text(
+            "Önümüzdeki 30 gün içinde süresi bitecek belgeler. Yenileme için tedarikçi yeni dosya gönderebilir.",
+          ),
+        ]),
+        el("table", "", [
+          el("thead", "", [
+            el(
+              "tr",
+              "",
+              list.map(
+                ["İşletme", "Belge", "Dosya", "Geçerlilik", "Durum"],
+                fn(h) { el("th", "", [text(h)]) },
+              ),
+            ),
+          ]),
+          el("tbody", "", case expiring {
+            [] -> [
+              el("tr", "", [
+                el("td", "empty-cell", [
+                  text("Yaklaşan belge süresi bulunmuyor."),
+                ]),
+              ]),
+            ]
+            _ ->
+              list.map(expiring, fn(row) {
+                case row {
+                  [legal, label, name, expiry, status] ->
+                    el("tr", "", [
+                      el("td", "", [text(legal)]),
+                      el("td", "", [text(label)]),
+                      el("td", "", [text(name)]),
+                      el("td", "", [text(expiry)]),
+                      el("td", "", [text(status)]),
+                    ])
+                  _ -> text("")
+                }
+              })
+          }),
         ]),
       ]),
       el("h2", "", [text("Başvuru belgeleri")]),
@@ -113,8 +157,10 @@ pub fn queue(
                             document_decision(csrf, id, "rejected", "Reddet"),
                           ])
                         False ->
-                          el("span", "badge muted", [text("İnceleme yetkisi yok")])
-                      }
+                          el("span", "badge muted", [
+                            text("İnceleme yetkisi yok"),
+                          ])
+                      },
                     ]),
                   ])
                 _ -> text("")
@@ -280,7 +326,15 @@ pub fn supplier_page(
               "document-grid",
               list.map(documents, fn(row) {
                 case row {
-                  [requirement, label, required, name, url, document_status] ->
+                  [
+                    requirement,
+                    label,
+                    required,
+                    name,
+                    url,
+                    document_status,
+                    expires_on,
+                  ] ->
                     el("section", "document-card " <> document_status, [
                       el("div", "document-card-head", [
                         el("span", "document-icon", [
@@ -322,6 +376,13 @@ pub fn supplier_page(
                             ),
                           ])
                       },
+                      case expires_on {
+                        "" -> text("")
+                        _ ->
+                          el("p", "muted", [
+                            text("Geçerlilik sonu: " <> expires_on),
+                          ])
+                      },
                       element.element(
                         "form",
                         [
@@ -336,6 +397,17 @@ pub fn supplier_page(
                         [
                           hidden("csrf", csrf),
                           hidden("requirement", requirement),
+                          el("label", "", [
+                            text("Geçerlilik sonu (varsa)"),
+                            element.element(
+                              "input",
+                              [
+                                a.name("expires_on"),
+                                a.attribute("type", "date"),
+                              ],
+                              [],
+                            ),
+                          ]),
                           el("label", "file-drop-field", [
                             el("span", "file-drop-icon", [text("↑")]),
                             el("span", "file-drop-copy", [
@@ -410,7 +482,7 @@ fn document_score(documents: List(List(String))) -> Int {
     list.length(
       list.filter(documents, fn(row) {
         case row {
-          [_, _, _, _, _, "accepted"] -> True
+          [_, _, _, _, _, "accepted", _] -> True
           _ -> False
         }
       }),
@@ -443,6 +515,7 @@ fn document_status_label(status: String) -> String {
     "accepted" -> "Onaylandı"
     "submitted" -> "İncelemede"
     "rejected" -> "Düzeltme gerekli"
+    "expired" -> "Süresi doldu"
     _ -> "Eksik"
   }
 }

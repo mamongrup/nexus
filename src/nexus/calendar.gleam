@@ -1,6 +1,7 @@
 import gleam/dynamic/decode
 import gleam/list
 import gleam/result
+import gleam/string
 import nexus/database
 import nexus/domain.{type Session}
 import pog
@@ -57,6 +58,21 @@ pub fn rows_with(
 }
 
 pub fn message(code: String) -> String {
+  case string.starts_with(code, "agency_api_key:") {
+    True ->
+      "Bağlantı onaylandı. Bu API anahtarını şimdi acente ayarlarına kaydedin; güvenlik nedeniyle tekrar gösterilmeyecek: "
+      <> string.slice(code, 15, string.length(code))
+    False ->
+      case string.starts_with(code, "agency_callback_failed:") {
+        True ->
+          "Acente callback bildirimi gönderilemedi: "
+          <> string.slice(code, 23, string.length(code))
+        False -> message_code(code)
+      }
+  }
+}
+
+fn message_code(code: String) -> String {
   case code {
     "already_posted" ->
       "Bu rezervasyon daha önce yevmiye defterine çift taraflı kaydedilmiş."
@@ -81,6 +97,10 @@ pub fn message(code: String) -> String {
     "not_approved" -> "Rezervasyon için önce tedarikçi opsiyon onayı gerekiyor."
     "expired" -> "Opsiyon artık aktif değil. Yeni bir opsiyon talep edin."
     "manual_review" -> "Rezervasyon durumu manuel inceleme gerektiriyor."
+    "agency_callback_sent" ->
+      "Acente callback bildirimi tekrar gönderildi ve yeni API anahtarı acenteye yazıldı."
+    "agency_callback_failed" ->
+      "Acente callback bildirimi gönderilemedi. Acente uygulaması veya endpoint ayarını kontrol edin."
     "forbidden" ->
       "Bu işlem için yetki veya aktif tedarikçi-acente bağlantısı bulunamadı."
     "ok" -> "İşlem tamamlandı."

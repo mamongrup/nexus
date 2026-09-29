@@ -37,13 +37,20 @@ BEGIN
   INSERT INTO core.organizations(id, legal_name, kind) VALUES (v_supplier, 'Elite Palace Resort A.Ş.', 'supplier');
   INSERT INTO auth.users(id, tenant_id, email, password_hash, display_name, role)
   VALUES (v_user, v_supplier, 'manager@elitepalace.local', 'disabled', 'General Manager', 'owner');
+  INSERT INTO onboarding.applications(owner_user_id,tenant_id,category_code,legal_name,status,identity_status)
+  VALUES(v_user,v_supplier,'hotel','Elite Palace Resort','approved','verified');
 
   PERFORM set_config('app.tenant_id', v_supplier::text, true);
   PERFORM set_config('app.actor_id', v_user::text, true);
   PERFORM set_config('app.role', 'owner', true);
 
-  INSERT INTO catalog.properties(tenant_id, title, description, capacity, nightly_minor, currency, locality, category_code, status)
-  VALUES (v_supplier, 'Elite Palace Grand Hotel & Spa', '5 Yıldızlı Elit Tesis', 30, 2000000, 'TRY', 'Antalya / Lara', 'hotel', 'published')
+  INSERT INTO catalog.properties(tenant_id, title, description, capacity, nightly_minor, currency, locality, category_code,
+                                 attributes, seo_title, seo_description, media, status)
+  VALUES (v_supplier, 'Elite Palace Grand Hotel & Spa', '5 Yıldızlı Elit Tesis', 30, 2000000, 'TRY',
+          'Antalya / Lara', 'hotel',
+          '{"room_type":"deluxe","property_type":"hotel","room_types":"deluxe","board_type":"room_only","check_in_time":"14:00","check_out_time":"11:00"}'::jsonb,
+          'Elite Palace Grand Hotel', 'Elite hospitality operations test listing',
+          '["https://example.invalid/elite-hotel.jpg"]'::jsonb, 'published')
   RETURNING id INTO v_property;
 
   -- Create Units

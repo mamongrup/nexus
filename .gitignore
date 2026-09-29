@@ -5,20 +5,4 @@
 *.beam
 *.log
 
-# Large archives and media
-*.zip
-*.png
-scratch/
-node_modules/
-
-# Playwright
-test-results/
-playwright-report/
-blob-report/
-playwright/.cache/
-
-# Cookie jars
-cookie.txt
-cookies.txt
-
 

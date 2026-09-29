@@ -13,7 +13,12 @@ Get-Content -LiteralPath $EnvFile | ForEach-Object {
     [Environment]::SetEnvironmentVariable($k, $v, 'Process')
   }
 }
-$PgBin = 'C:/laragon/bin/postgresql/postgresql/bin'
-$PgData = 'C:/laragon/data/nexustraveltech-postgresql'
-$env:Path = 'C:/laragon/bin/gleam;C:/laragon/bin/erlang/bin;' + $PgBin + ';' + $env:Path
-
+$PgBin = if ($env:NEXUS_PG_BIN) {
+  $env:NEXUS_PG_BIN
+} elseif (Test-Path -LiteralPath 'C:/laragon/bin/postgresql/postgresql/bin/psql.exe') {
+  'C:/laragon/bin/postgresql/postgresql/bin'
+} else {
+  Split-Path (Get-Command psql -ErrorAction Stop).Source -Parent
+}
+$PgData = if ($env:NEXUS_PG_DATA) { $env:NEXUS_PG_DATA } else { 'C:/laragon/data/nexustraveltech-postgresql' }
+$env:Path = $PgBin + [IO.Path]::PathSeparator + $env:Path

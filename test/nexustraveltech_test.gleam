@@ -137,4 +137,3 @@ pub fn action_permissions_test() {
   assert domain.can_manage_documents("owner")
   assert !domain.can_manage_documents("housekeeping")
 }
-

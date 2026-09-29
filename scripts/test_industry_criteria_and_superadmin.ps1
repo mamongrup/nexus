@@ -23,6 +23,13 @@ function CsrfToken($html) {
   throw "CSRF token could not be extracted from page HTML."
 }
 
+function Demo-Password([string]$EnvKey) {
+  $configured = [Environment]::GetEnvironmentVariable($EnvKey)
+  if ($configured) { return $configured }
+  if ($env:ALLOW_DEMO_PASSWORDS -eq 'true') { return 'password123' }
+  throw "$EnvKey is required. Set ALLOW_DEMO_PASSWORDS=true only for disposable local demo accounts."
+}
+
 # ------------------------------------------------------------
 # STEP 1: Super Admin Login
 # ------------------------------------------------------------
@@ -30,7 +37,7 @@ Write-Host "`n--- STEP 1: Super Admin Authentication ---" -ForegroundColor Yello
 $loginPage = Invoke-WebRequest -Uri "$BaseUrl/login" -WebSession $Session -Method Get -UseBasicParsing
 $csrf = CsrfToken $loginPage.Content
 
-$adminPass = if ($env:ADMIN_PASSWORD) { $env:ADMIN_PASSWORD } else { "password123" }
+$adminPass = Demo-Password 'ADMIN_PASSWORD'
 $loginResp = Invoke-WebRequest -Uri "$BaseUrl/login" -WebSession $Session -Method Post -UseBasicParsing -Headers @{ Origin = $BaseUrl } -Body @{
   csrf = $csrf
   email = "admin@nexus.local"
@@ -205,7 +212,7 @@ $supplierSession = New-Object Microsoft.PowerShell.Commands.WebRequestSession
 $supplierLogin = Invoke-WebRequest -Uri "$BaseUrl/login" -WebSession $supplierSession -Method Get -UseBasicParsing
 $sCsrf = CsrfToken $supplierLogin.Content
 
-$suppPass = if ($env:SUPPLIER_PASSWORD) { $env:SUPPLIER_PASSWORD } else { "password123" }
+$suppPass = Demo-Password 'SUPPLIER_PASSWORD'
 $sLoginResp = Invoke-WebRequest -Uri "$BaseUrl/login" -WebSession $supplierSession -Method Post -UseBasicParsing -Headers @{ Origin = $BaseUrl } -Body @{
   csrf = $sCsrf
   email = "supplier@nexus.local"

@@ -41,6 +41,7 @@ pub fn page(
                   "İstek durumu",
                   "Adres",
                   "Kapsam / sınır",
+                  "Callback",
                   "Oluşturma",
                   "İşlem",
                 ],
@@ -81,6 +82,8 @@ fn render_row(row: List(String), csrf: String) {
       limit,
       created_at,
       note,
+      callback_status,
+      callback_error,
     ] ->
       el("tr", "", [
         el("td", "", [
@@ -114,10 +117,12 @@ fn render_row(row: List(String), csrf: String) {
           text(" · "),
           text(limit <> " ilan"),
         ]),
+        el("td", "", [callback_badge(callback_status, callback_error)]),
         el("td", "muted", [text(created_at)]),
         el("td", "", [
           case status {
             "pending" -> decision_form(csrf, id, categories, limit)
+            "approved" -> retry_callback_form(csrf, id, callback_status)
             _ ->
               el("small", "muted", [
                 text("Ayarları görmek için yeniden istekte bulunun"),
@@ -126,6 +131,47 @@ fn render_row(row: List(String), csrf: String) {
         ]),
       ])
     _ -> el("tr", "", [el("td", "", [text("İstek okunamadı")])])
+  }
+}
+
+fn callback_badge(status: String, error: String) {
+  case status {
+    "sent" -> el("span", "status-pill success", [text("Acenteye yazıldı")])
+    "failed" ->
+      el("span", "status-pill warning", [
+        text("Hata"),
+        case error {
+          "" -> text("")
+          value -> el("small", "muted", [text(value)])
+        },
+      ])
+    "pending" -> el("span", "status-pill warning", [text("Bekliyor")])
+    "" -> el("span", "status-pill", [text("—")])
+    _ -> el("span", "status-pill", [text(status)])
+  }
+}
+
+fn retry_callback_form(csrf: String, id: String, callback_status: String) {
+  case callback_status {
+    "sent" -> el("small", "muted", [text("Bağlantı aktif")])
+    _ ->
+      element.element(
+        "form",
+        [
+          a.attribute("method", "post"),
+          a.attribute(
+            "action",
+            "/admin/partners/connection-requests/" <> id <> "/retry-callback",
+          ),
+          a.class("connection-decision-form"),
+        ],
+        [
+          hidden("csrf", csrf),
+          element.element("button", [a.class("button primary")], [
+            text("Callback tekrar gönder"),
+          ]),
+        ],
+      )
   }
 }
 
