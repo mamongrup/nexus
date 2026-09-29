@@ -1,5 +1,5 @@
 -module(nexus_secrets).
--export([seal/3, open/3, valid_https/1]).
+-export([seal/3, open/3, valid_https/1, secure_compare/2]).
 
 seal(Value, Key, Context) when byte_size(Key) >= 64 ->
     try
@@ -28,3 +28,15 @@ valid_https(Value) ->
             _ -> false
         end
     catch _:_ -> false end.
+
+%% Constant-time secret comparison. Every candidate byte is examined so the
+%% duration does not reveal how many leading characters matched.
+secure_compare(A, B) when is_binary(A), is_binary(B), byte_size(A) =:= byte_size(B) ->
+    secure_compare_loop(A, B, 0);
+secure_compare(_, _) ->
+    false.
+
+secure_compare_loop(<<>>, <<>>, Acc) ->
+    Acc =:= 0;
+secure_compare_loop(<<A, RestA/binary>>, <<B, RestB/binary>>, Acc) ->
+    secure_compare_loop(RestA, RestB, Acc bor (A bxor B)).

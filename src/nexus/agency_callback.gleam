@@ -1,3 +1,5 @@
+import gleam/json
+
 @external(erlang, "nexus_agency_callback_http", "post_json")
 fn post_json_ffi(
   url: String,
@@ -12,8 +14,14 @@ pub fn post_connection_approved(
   callback_key: String,
 ) -> Result(String, String) {
   let url = clean_endpoint(agency_endpoint) <> "/v1/nexus/connection-approved"
+  // Encode through the JSON writer so a quote or backslash inside an agency
+  // identifier cannot corrupt the payload the remote panel parses.
   let body =
-    "{\"agency_id\":\"" <> agency_id <> "\",\"api_key\":\"" <> api_key <> "\"}"
+    json.object([
+      #("agency_id", json.string(agency_id)),
+      #("api_key", json.string(api_key)),
+    ])
+    |> json.to_string
   post_json_ffi(url, body, "Bearer " <> callback_key)
 }
 

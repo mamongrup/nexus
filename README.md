@@ -24,6 +24,15 @@ PowerShell 7 ile proje klasöründe:
 ./scripts/dev.ps1    # Alternatif: terminalde çalıştır, Ctrl+C ile durdur.
 ```
 
+PowerShell 7 kurulu değilse veya imza yürütme ilkesi betikleri engelliyorsa aynı
+komutların `.cmd` sarmalayıcıları vardır. Bunlar işletim sistemi ayarına dokunmadan
+yalnızca bu proje çağrısı için yürütme ilkesini geçici olarak atlar:
+
+```cmd
+scripts\start.cmd
+scripts\dev.cmd
+```
+
 İki komut aynı anda kullanılmaz. Sunucu zaten çalışıyorsa `start.ps1` sağlık kontrolü yapıp mevcut adresi döndürür. Loglar `.local/server.log` ve `.local/server-error.log` altındadır. PostgreSQL ayrı bir süreçtir; Laragon'un diğer PostgreSQL veri klasörünü değiştirmez.
 
 ## Kurulum ve doğrulama
@@ -34,7 +43,10 @@ PowerShell 7 ile proje klasöründe:
 ./scripts/test.ps1     # Format + Gleam testleri + DB izolasyon testleri
 ./scripts/smoke.ps1    # Çalışan sunucuda giriş/ilan/yayın/güvenlik testleri
 ./scripts/reservation-smoke.ps1 # Üç şirket, ayar yetkileri ve rezervasyon HTTP testi
+./scripts/rotate-weak-passwords.ps1 # Bilinen zayıf parolaları döndürür, kalan varsa durur
 ```
+
+Her komutun `scripts\` altında `.cmd` karşılığı vardır (`scripts\test.cmd` gibi).
 
 Setup tekrar çalıştırılabilir; mevcut yöneticinin parolasını ve verilerini sıfırlamaz. Smoke testi GUID isimli kendi geçici ilanını oluşturur, doğrular ve yalnız o kayıt ile olaylarını temizler. DB izolasyon testleri transaction rollback kullanır.
 
@@ -72,11 +84,19 @@ Gleam backend Wisp/Mist ile çalışır. Ön yüz ve panel gerçek Lustre bileş
 - `docs/architecture.md`: kararlar ve kilitli paket sürümleri.
 - `docs/production-gates.md`: sonraki paketler ve canlıya geçiş koşulları.
 
+## Ağ ve kimlik doğrulama sınırları
+
+- Hız sınırı ve denetim kaydı istemci kimliği olarak **socket peer adresini** kullanır. `X-Forwarded-For` ve `CF-Connecting-IP` yalnızca eşleşen peer `TRUSTED_PROXY_CIDRS` içindeyse okunur ve zincir en dış hoptan içe doğru ilk güvenilmeyen adrese açılır. `TRUSTED_PROXY_CIDRS` boşsa hiçbir yönlendirme başlığına güvenilmez.
+- Platform seviyesindeki acente API çağrıları `NEXUS_API_KEY` ile doğrulanır. `NEXUS_CONFIG_KEY` kimlik doğrulaması için kabul edilmez; o anahtar yalnızca şifreli ayarların ana anahtarıdır. Sır karşılaştırması sabit zamanlıdır.
+- `APP_PUBLIC_HOST` yalnızca `APP_ENV=production` iken zorunludur; eksikse uygulama açılışta açık hata verir.
+
 ## Kapsam sınırı
 
 Takvim, tarih bazlı fiyat, opsiyon talebi/onayı, ödenmemiş kesin rezervasyon ve iptal artık uygulanmıştır. NEXUS yöneticisi pazaryeri POS/AI/e-posta/depolama ayarlarını, her acente yöneticisi kendi standart POS bilgilerini yönetir. Gizli ayarlar AES-256-GCM ile şirket/alan bağlamına bağlı şifrelenir; ekrana geri verilmez. NEXUS_CONFIG_KEY ayrı yedeklenmelidir.
 
 Gerçek ParamPOS tahsilatı, pazaryeri dağıtımı, ledger posting, AI çalışanları ve tüm kategoriler henüz tamamlanmadı. Ayar girilmesi bu servisleri etkinleştirmez. Güncel ve doğrulanmış kapsam `docs/implementation-status.md` dosyasındadır. APP_ENV=development kontrolü aktiftir.
+
+Kanal fiyat akışı da bu sınırın içindedir: `GET /api/metasearch/google-hotel-ads.xml` doğrulanmış tedarikçi fiyatı yayınlanana kadar **503** döndürür. Sabit kodlanmış fiyat, geçerlilik penceresi veya zaman damgasıyla 200 üretmez; aksi hâlde kanal uydurma müsaitliği doğrulanmış sayardı.
 
 Kaynakların Apache ile yanlışlıkla sunulmaması için proje kökünde `.htaccess` erişimi kapatır. Bu uygulama PHP değildir; `nexustraveltech.test` otomatik Laragon virtual host'u yerine yukarıdaki Gleam sunucu adresi kullanılır.
 

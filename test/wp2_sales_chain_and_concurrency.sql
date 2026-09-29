@@ -198,6 +198,19 @@ BEGIN
   -- =========================================================================
   -- 7. İptal, Stok Serbest Bırakma ve Hakediş İptali (Cancellation & Annulment)
   -- =========================================================================
+  UPDATE finance.settlements SET status='paid',paid_at=now()
+  WHERE id=v_settlement_id;
+  v_result := partners.process_reservation_status_webhook(
+    'paid-settlement-cancel-' || v_res_a::text, v_agency::text, v_property::text,
+    'cancelled', jsonb_build_object('reservation_id', v_res_a)
+  )::jsonb;
+  IF v_result->>'error' <> 'paid_settlement_requires_manual_reversal'
+     OR (SELECT status FROM booking.reservations WHERE id=v_booking_id) <> 'confirmed' THEN
+    RAISE EXCEPTION 'WP2.7 FAILED: Ödenmiş hakediş iptali engellenmedi: %', v_result;
+  END IF;
+  UPDATE finance.settlements SET status='pending',paid_at=NULL
+  WHERE id=v_settlement_id;
+
   v_result := partners.process_reservation_status_webhook(
     'cancel-' || v_res_a::text, v_agency::text, v_property::text,
     'cancelled', jsonb_build_object('reservation_id', v_res_a)

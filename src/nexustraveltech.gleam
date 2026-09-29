@@ -1,5 +1,6 @@
 import envoy
 import gleam/erlang/process
+import gleam/http/request.{type Request as HttpRequest}
 import gleam/int
 import gleam/io
 import gleam/option
@@ -46,16 +47,45 @@ pub fn main() {
   let assert Ok(_) = pog.start(config)
   let db = pog.named_connection(name)
   wisp.configure_logger()
-  let handler = fn(req) { router.handle(req, db, origin) }
+  // The socket peer is the only address an attacker cannot choose. Resolve it
+  // here, per request, and hand it to the router so rate limiting and audit
+  // keys never depend on a client supplied forwarding header.
+  let handler = fn(request: HttpRequest(mist.Connection)) {
+    let peer = peer_address(request.body)
+    let serve =
+      wisp_mist.handler(
+        fn(req) { router.handle(req, db, origin, peer) },
+        secret,
+      )
+    serve(request)
+  }
   let assert Ok(_) =
     handler
-    |> wisp_mist.handler(secret)
     |> mist.new
     |> mist.bind("127.0.0.1")
     |> mist.port(env_int("APP_PORT", 8080))
     |> mist.start
   io.println("NEXUS TravelTech: " <> origin)
   process.sleep_forever()
+}
+
+fn peer_address(connection: mist.Connection) -> String {
+  case mist.get_connection_info(connection) {
+    Ok(info) -> info.ip_address |> mist.ip_address_to_string |> normalize_ip
+    Error(_) -> ""
+  }
+}
+
+@external(erlang, "nexus_net", "normalize_ip")
+fn normalize_ip_ffi(ip: String) -> String
+
+/// Rewrites IPv4-mapped IPv6 spellings so a peer recorded as ::ffff:127.0.0.1
+/// and a trusted rule written as 127.0.0.1 are recognised as the same host.
+fn normalize_ip(ip: String) -> String {
+  case string.trim(ip) {
+    "" -> ""
+    value -> normalize_ip_ffi(value)
+  }
 }
 
 fn env_int(key: String, fallback: Int) -> Int {

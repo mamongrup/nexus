@@ -2,10 +2,39 @@ $ErrorActionPreference = 'Stop'
 $ProjectRoot = Split-Path $PSScriptRoot -Parent
 Set-Location -LiteralPath $ProjectRoot
 New-Item -ItemType Directory -Force -Path '.local' | Out-Null
-function New-Secret { [Convert]::ToHexString([Security.Cryptography.RandomNumberGenerator]::GetBytes(32)).ToLowerInvariant() }
+function New-Secret {
+  # RandomNumberGenerator::GetBytes(int) only exists on .NET Core, and this
+  # project must also run on the Windows PowerShell 5.1 that ships with Windows.
+  $bytes = New-Object byte[] 32
+  $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+  try { $rng.GetBytes($bytes) } finally { $rng.Dispose() }
+  (($bytes | ForEach-Object { '{0:X2}' -f $_ }) -join '').ToLowerInvariant()
+}
 if (!(Test-Path -LiteralPath '.env')) {
-  $owner = New-Secret; $app = New-Secret; $secret = New-Secret; $admin = (New-Secret).Substring(0,24)
-  @("APP_ENV=development","APP_PORT=8081","APP_ORIGIN=http://127.0.0.1:8081","PGHOST=127.0.0.1","PGPORT=5433","PGDATABASE=nexustraveltech","PGUSER=nexus_app","PGPASSWORD=$app","PGOWNER=nexus_owner","PGOWNER_PASSWORD=$owner","SECRET_KEY_BASE=$secret","ADMIN_EMAIL=admin@nexus.local","ADMIN_PASSWORD=$admin") | Set-Content -LiteralPath '.env' -Encoding utf8
+  $owner = New-Secret; $app = New-Secret; $secret = New-Secret; $admin = New-Secret
+  $supplier = New-Secret; $agency = New-Secret; $quality = New-Secret; $nexusApi = New-Secret
+  @(
+    "APP_ENV=development","APP_PORT=8081","APP_ORIGIN=http://127.0.0.1:8081",
+    "PGHOST=127.0.0.1","PGPORT=5433","PGDATABASE=nexustraveltech","PGUSER=nexus_app",
+    "PGPASSWORD=$app","PGOWNER=nexus_owner","PGOWNER_PASSWORD=$owner","SECRET_KEY_BASE=$secret",
+    "ADMIN_EMAIL=admin@nexus.local","ADMIN_PASSWORD=$admin",
+    "SUPPLIER_PASSWORD=$supplier","AGENCY_PASSWORD=$agency","QUALITY_PASSWORD=$quality",
+    "NEXUS_API_KEY=$nexusApi",
+    "# Leave empty to ignore X-Forwarded-For and rate limit on the socket peer.",
+    "TRUSTED_PROXY_CIDRS="
+  ) | Set-Content -LiteralPath '.env' -Encoding utf8
+}
+# Older checkouts predate the integration key and the proxy trust list. Append
+# whatever is missing so re-running setup repairs an existing .env.
+$existing = @{}
+[IO.File]::ReadAllLines((Join-Path $ProjectRoot '.env')) | ForEach-Object {
+  if ($_ -match '^([^=]+)=') { $existing[$Matches[1].Trim()] = $true }
+}
+$missing = @()
+if (!$existing['NEXUS_API_KEY']) { $missing += "NEXUS_API_KEY=$(New-Secret)" }
+if (!$existing['TRUSTED_PROXY_CIDRS']) { $missing += 'TRUSTED_PROXY_CIDRS=' }
+if ($missing.Count -gt 0) {
+  Add-Content -LiteralPath '.env' -Value $missing -Encoding utf8
 }
 . "$PSScriptRoot/env.ps1"
 gleam deps download

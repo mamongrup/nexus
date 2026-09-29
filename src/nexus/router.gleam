@@ -60,6 +60,7 @@ pub fn handle(
   req: wisp.Request,
   conn: pog.Connection,
   origin: String,
+  peer: String,
 ) -> wisp.Response {
   let allowed_host = case envoy.get("APP_ENV") {
     Ok("production") -> {
@@ -76,7 +77,7 @@ pub fn handle(
       let csrf =
         wisp.get_cookie(req, "nexus_csrf", wisp.Signed)
         |> result.unwrap(wisp.random_string(32))
-      route(req, conn, csrf, origin)
+      route(req, conn, csrf, origin, peer)
       |> wisp.set_cookie(req, "nexus_csrf", csrf, wisp.Signed, 28_800)
       |> wisp.set_header("cache-control", "no-store")
       |> wisp.set_header("x-content-type-options", "nosniff")
@@ -84,7 +85,7 @@ pub fn handle(
       |> wisp.set_header("referrer-policy", "same-origin")
       |> wisp.set_header(
         "content-security-policy",
-        "default-src 'self'; img-src 'self' data: https: http:; media-src 'self' data: https: http: blob:; frame-src 'self' https://www.youtube.com https://www.youtube-nocookie.com https://player.vimeo.com; style-src 'self' 'unsafe-inline'; font-src 'self' data: https:; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
+        "default-src 'self'; img-src 'self' data: https:; media-src 'self' data: https: blob:; frame-src 'self' https://www.youtube.com https://www.youtube-nocookie.com https://player.vimeo.com; style-src 'self' 'unsafe-inline'; font-src 'self' data: https:; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
       )
     }
   }
@@ -102,27 +103,76 @@ fn cache_get(key: String, default: a) -> a
 @external(erlang, "persistent_term", "put")
 fn cache_put(key: String, value: a) -> Nil
 
-fn request_client_id(req: wisp.Request) -> String {
-  let forwarded =
-    request.get_header(req, "x-forwarded-for")
-    |> result.unwrap("")
-    |> first_csv_value
-  case forwarded {
-    "" ->
-      request.get_header(req, "cf-connecting-ip")
-      |> result.unwrap("")
-      |> string.trim
-      |> fallback("unknown")
-    value -> value
+@external(erlang, "nexus_net", "ip_in_cidrs")
+fn ip_in_cidrs_ffi(ip: String, cidrs: List(String)) -> Bool
+
+/// The identity used for rate limiting and audit records.
+///
+/// The socket peer is the only address a client cannot choose, so it is
+/// authoritative. `X-Forwarded-For` and `CF-Connecting-IP` are attacker
+/// controlled and are consulted only when the immediate peer is a proxy this
+/// deployment listed in `TRUSTED_PROXY_CIDRS`. With that variable unset no
+/// forwarding header is ever believed, which closes header spoofing.
+fn request_client_id(req: wisp.Request, peer: String) -> String {
+  case peer {
+    "" -> "unknown"
+    _ -> {
+      let cidrs = trusted_proxy_cidrs()
+      case is_trusted_address(peer, cidrs) {
+        True -> forwarded_client(req, cidrs) |> fallback(peer)
+        False -> peer
+      }
+    }
   }
 }
 
-fn first_csv_value(value: String) -> String {
-  value
-  |> string.split(",")
-  |> list.first
+fn trusted_proxy_cidrs() -> List(String) {
+  envoy.get("TRUSTED_PROXY_CIDRS")
   |> result.unwrap("")
-  |> string.trim
+  |> string.split(",")
+  |> list.map(string.trim)
+  |> list.filter(fn(entry) { entry != "" })
+}
+
+fn is_trusted_address(ip: String, cidrs: List(String)) -> Bool {
+  case cidrs {
+    [] -> False
+    _ -> ip_in_cidrs_ffi(ip, cidrs)
+  }
+}
+
+fn forwarded_client(req: wisp.Request, cidrs: List(String)) -> String {
+  let chain =
+    request.get_header(req, "x-forwarded-for")
+    |> result.unwrap("")
+    |> string.split(",")
+    |> list.map(string.trim)
+    |> list.filter(fn(entry) { entry != "" })
+  case chain {
+    [] ->
+      request.get_header(req, "cf-connecting-ip")
+      |> result.unwrap("")
+      |> string.trim
+    _ -> rightmost_untrusted(list.reverse(chain), cidrs, "")
+  }
+}
+
+/// Walk the forwarding chain from the closest hop outwards and return the
+/// first address that is not itself a trusted proxy. Taking the first entry
+/// instead would let a client prepend a forged address to the header.
+fn rightmost_untrusted(
+  entries: List(String),
+  cidrs: List(String),
+  fallback: String,
+) -> String {
+  case entries {
+    [] -> fallback
+    [entry, ..rest] ->
+      case is_trusted_address(entry, cidrs) {
+        True -> rightmost_untrusted(rest, cidrs, fallback)
+        False -> entry
+      }
+  }
 }
 
 fn fallback(value: String, default: String) -> String {
@@ -161,6 +211,23 @@ fn fail() {
   |> wisp.html_body(
     "<!doctype html><html lang=\"tr\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Bağlantı Hatası - NEXUS</title><link rel=\"stylesheet\" href=\"/static/site.css\"><link rel=\"stylesheet\" href=\"/static/admin-modern.css\"></head><body style=\"display:grid;place-items:center;min-height:100vh;background:#f7f9f8;font-family:system-ui,-apple-system,sans-serif;margin:0;padding:20px;\"><div style=\"text-align:center;padding:36px;background:#fff;border-radius:18px;border:1px solid #d9e3df;box-shadow:0 8px 30px rgba(0,0,0,0.06);max-width:440px;width:100%;box-sizing:border-box;\"><h2 style=\"margin:0 0 10px;font-size:1.3rem;color:#1a3832;\">Veritabanına Erişilemiyor</h2><p style=\"color:#6b7f79;font-size:0.92rem;line-height:1.5;margin:0 0 20px;\">Veritabanı servisiyle bağlantı kurulamadı. Lütfen sayfayı yenileyin.</p><a href=\"javascript:location.reload()\" class=\"button primary\" style=\"display:inline-block;padding:10px 22px;border-radius:10px;background:#087f83;color:#fff;text-decoration:none;font-weight:600;font-size:0.9rem;\">Sayfayı Yenile</a></div></body></html>",
   )
+}
+
+/// Channel rate feeds must never answer with invented availability.
+///
+/// A 200 here would let a channel treat placeholder prices and a stale
+/// validity window as confirmed supplier inventory, so an unconfigured feed
+/// reports itself unavailable instead.
+fn channel_feed_unavailable() -> wisp.Response {
+  let body =
+    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+    <> "<OTA_HotelRateAmountNotifRQError>\n"
+    <> "  <Error Code=\"503\">Channel rate feed is unavailable. No verified supplier rates are published.</Error>\n"
+    <> "</OTA_HotelRateAmountNotifRQError>"
+  wisp.response(503)
+  |> wisp.set_header("cache-control", "no-store")
+  |> wisp.set_header("content-type", "application/xml; charset=utf-8")
+  |> wisp.string_body(body)
 }
 
 fn field(fields: List(#(String, String)), key: String) {
@@ -283,31 +350,44 @@ fn retry_agency_connection_callback(
   }
 }
 
-fn agency_request_key_ok(req: wisp.Request) -> Bool {
-  let config_key = envoy.get("NEXUS_CONFIG_KEY") |> result.unwrap("")
+@external(erlang, "nexus_secrets", "secure_compare")
+fn secure_compare_ffi(presented: String, expected: String) -> Bool
+
+/// Compares a presented credential against the expected secret without letting
+/// response timing reveal how many leading characters matched.
+fn secret_matches(presented: String, expected: String) -> Bool {
+  case expected {
+    "" -> False
+    _ ->
+      secure_compare_ffi(presented, expected)
+      || secure_compare_ffi(presented, "Bearer " <> expected)
+  }
+}
+
+/// Authorise a platform level agency request with the dedicated integration key.
+///
+/// `NEXUS_CONFIG_KEY` is deliberately not accepted here. It is the AES-256-GCM
+/// master key that protects every sealed setting, so using it as a network
+/// credential would tie data at rest and authentication to the same secret.
+/// Integration callers must present `NEXUS_API_KEY`.
+fn agency_request_key_ok(req: wisp.Request, peer: String) -> Bool {
   let api_key = envoy.get("NEXUS_API_KEY") |> result.unwrap("")
   let auth_hdr = request.get_header(req, "authorization") |> result.unwrap("")
   let api_hdr = request.get_header(req, "x-nexus-api-key") |> result.unwrap("")
-  let key_matches = fn(value: String, key: String) {
-    key != "" && { value == key || value == "Bearer " <> key }
-  }
-  let ok =
-    key_matches(auth_hdr, config_key)
-    || key_matches(auth_hdr, api_key)
-    || key_matches(api_hdr, config_key)
-    || key_matches(api_hdr, api_key)
+  let ok = secret_matches(auth_hdr, api_key) || secret_matches(api_hdr, api_key)
   case ok {
     True -> True
     False -> {
+      // The attempt is always recorded so repeated bad keys stay visible. The
+      // request is denied either way: this check authorises, it does not
+      // throttle, so the limiter must not be able to turn into a bypass.
       let key =
         "agency-request-key:"
-        <> request_client_id(req)
+        <> request_client_id(req, peer)
         <> ":"
         <> string.slice(auth_hdr <> api_hdr, 0, 64)
-      case rate_limited(key, 30, 300_000.0) {
-        True -> False
-        False -> False
-      }
+      rate_limited(key, 30, 300_000.0)
+      False
     }
   }
 }
@@ -362,6 +442,7 @@ fn agency_request_authorized(
   req: wisp.Request,
   conn: pog.Connection,
   agency_id: String,
+  peer: String,
 ) -> Bool {
   case string.trim(agency_id) {
     "" -> False
@@ -369,7 +450,7 @@ fn agency_request_authorized(
       let key = request_api_key(req)
       case agency_api_key_required(conn, agency_id) {
         True -> agency_api_key_ok(conn, agency_id, key)
-        False -> agency_request_key_ok(req)
+        False -> agency_request_key_ok(req, peer)
       }
     }
   }
@@ -460,6 +541,7 @@ fn route(
   conn: pog.Connection,
   csrf: String,
   origin: String,
+  peer: String,
 ) {
   case req.method, wisp.path_segments(req) {
     http.Get, ["v1", "health"] -> {
@@ -485,7 +567,7 @@ fn route(
       )
     }
     http.Post, ["v1", "agency", "connection-request"] -> {
-      case agency_request_key_ok(req) {
+      case agency_request_key_ok(req, peer) {
         False ->
           wisp.response(401)
           |> wisp.json_body(
@@ -536,8 +618,9 @@ fn route(
         }
       }
     }
-    http.Get, ["api", "v1", "feed", "listings"] -> api_feed_listings(req, conn)
-    http.Get, ["v1", "feed", "listings"] -> api_feed_listings(req, conn)
+    http.Get, ["api", "v1", "feed", "listings"] ->
+      api_feed_listings(req, conn, peer)
+    http.Get, ["v1", "feed", "listings"] -> api_feed_listings(req, conn, peer)
     http.Get, ["api", "v1", "contract", "categories"] ->
       api_contract_categories(req, conn)
     http.Get, ["v1", "contract", "categories"] ->
@@ -548,12 +631,12 @@ fn route(
     http.Get, ["api", "v1", "contract", "filters"] -> api_contract_filters(conn)
     http.Get, ["v1", "contract", "filters"] -> api_contract_filters(conn)
     http.Get, ["api", "v1", "feed", "inventory"] ->
-      api_feed_inventory(req, conn)
-    http.Get, ["v1", "feed", "inventory"] -> api_feed_inventory(req, conn)
+      api_feed_inventory(req, conn, peer)
+    http.Get, ["v1", "feed", "inventory"] -> api_feed_inventory(req, conn, peer)
     http.Post, ["api", "v1", "webhooks", "reservations"] ->
-      api_webhook_reservations(req, conn)
+      api_webhook_reservations(req, conn, peer)
     http.Post, ["v1", "webhooks", "reservations"] ->
-      api_webhook_reservations(req, conn)
+      api_webhook_reservations(req, conn, peer)
     http.Get, [] -> public_site(conn, "home")
     http.Get, ["robots.txt"] ->
       wisp.ok()
@@ -689,7 +772,7 @@ fn route(
           "login:"
             <> string.lowercase(string.trim(email))
             <> ":"
-            <> request_client_id(req),
+            <> request_client_id(req, peer),
           12,
           300_000.0,
         )
@@ -760,27 +843,13 @@ fn route(
           )
       }
     }
-    http.Get, ["api", "metasearch", "google-hotel-ads.xml"] -> {
-      let xml =
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
-        <> "<OTA_HotelRateAmountNotifRQ xmlns=\"http://www.opentravel.org/OTA/2003/05\" EchoToken=\"NEXUS-GHA-2026\" TimeStamp=\"2026-09-11T14:30:00Z\" Version=\"3.0\">\n"
-        <> "  <RateAmountMessages HotelCode=\"NEXUS-TURKEY-ALL\">\n"
-        <> "    <RateAmountMessage>\n"
-        <> "      <StatusApplication Start=\"2026-09-11\" End=\"2026-10-31\" RatePlanCode=\"DIRECT_BEST_RATE\"/>\n"
-        <> "      <Rates>\n"
-        <> "        <Rate CurrencyCode=\"TRY\">\n"
-        <> "          <BaseByGuestAmts>\n"
-        <> "            <BaseByGuestAmt AmountBeforeTax=\"3800.00\" AmountAfterTax=\"4180.00\" DecimalPlaces=\"2\"/>\n"
-        <> "          </BaseByGuestAmts>\n"
-        <> "        </Rate>\n"
-        <> "      </Rates>\n"
-        <> "    </RateAmountMessage>\n"
-        <> "  </RateAmountMessages>\n"
-        <> "</OTA_HotelRateAmountNotifRQ>"
-      wisp.ok()
-      |> wisp.set_header("content-type", "application/xml; charset=utf-8")
-      |> wisp.string_body(xml)
-    }
+    // This feed used to answer 200 with a canned document: frozen timestamp,
+    // a hardcoded validity window and invented prices that no listing produced.
+    // A channel scraping it would ingest fabricated rates as confirmed
+    // availability, so the route now reports unavailable until real supplier
+    // rates are published, matching how every other unverified channel behaves.
+    http.Get, ["api", "metasearch", "google-hotel-ads.xml"] ->
+      channel_feed_unavailable()
     http.Get, [slug] -> public_site(conn, slug)
     _, _ -> wisp.not_found()
   }
@@ -810,10 +879,14 @@ fn category_filters_json(conn: pog.Connection, s: domain.Session) {
   }
 }
 
-fn api_feed_listings(req: wisp.Request, conn: pog.Connection) -> wisp.Response {
+fn api_feed_listings(
+  req: wisp.Request,
+  conn: pog.Connection,
+  peer: String,
+) -> wisp.Response {
   let query = wisp.get_query(req)
   let agency_id = field(query, "agency_id")
-  case agency_request_authorized(req, conn, agency_id) {
+  case agency_request_authorized(req, conn, agency_id, peer) {
     False ->
       wisp.response(401)
       |> wisp.json_body(
@@ -1121,11 +1194,12 @@ fn api_contract_filters(conn: pog.Connection) -> wisp.Response {
 fn api_feed_inventory(
   req: wisp.Request,
   conn: pog.Connection,
+  peer: String,
 ) -> wisp.Response {
   let query = wisp.get_query(req)
   let listing_id = field(query, "listing_id")
   let agency_id = field(query, "agency_id")
-  case agency_request_authorized(req, conn, agency_id) {
+  case agency_request_authorized(req, conn, agency_id, peer) {
     False ->
       wisp.response(401)
       |> wisp.json_body(
@@ -1194,6 +1268,7 @@ fn api_feed_inventory(
 fn api_webhook_reservations(
   req: wisp.Request,
   conn: pog.Connection,
+  peer: String,
 ) -> wisp.Response {
   use body <- wisp.require_string_body(req)
   case string.trim(body) {
@@ -1202,7 +1277,7 @@ fn api_webhook_reservations(
       |> wisp.json_body("{\"ok\":false,\"error\":\"Boş istek gövdesi\"}")
     json_payload -> {
       let agency_id = agency_id_from_json_payload(json_payload)
-      case agency_request_authorized(req, conn, agency_id) {
+      case agency_request_authorized(req, conn, agency_id, peer) {
         False ->
           wisp.response(401)
           |> wisp.json_body(
