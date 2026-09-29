@@ -59,6 +59,8 @@ try {
 BEGIN;
 INSERT INTO core.organizations(id,legal_name,kind) VALUES('$supplier','HTTP test supplier','supplier'),('$agency','HTTP test agency','agency'),('$nexus','HTTP test nexus','nexus');
 INSERT INTO auth.users(tenant_id,email,password_hash,display_name) SELECT id,id::text||'@test.local',crypt(:'test_password',gen_salt('bf',12)),'HTTP test' FROM core.organizations WHERE id IN ('$supplier','$agency','$nexus');
+INSERT INTO onboarding.applications(owner_user_id,tenant_id,category_code,legal_name,status,identity_status)
+SELECT id,tenant_id,'hotel','HTTP test supplier','approved','verified' FROM auth.users WHERE tenant_id='$supplier';
 COMMIT;
 "@ | Out-Null
  $s=Login $supplier; $a=Login $agency; $n=Login $nexus
@@ -107,11 +109,35 @@ COMMIT;
  $page=Post $n '/admin/partners' @{supplier=$supplier;agency=$agency;status='active'}
  Assert ($page.Content.Contains('tamamland')) 'NEXUS connects supplier and agency'
  $title="HTTP-$fixture"
- $page=Post $s '/admin/listings' @{title=$title;locality='Test';capacity='2';price='100.00';currency='TRY';description='Temporary integration fixture'}
+ # The listing must satisfy the common contract before it can be submitted:
+ # media, description, SEO text and the category fields.
+ $page=Post $s '/admin/listings' @{
+   title=$title; locality='Test'; capacity='2'; price='100.00'; currency='TRY'
+   description='Temporary integration fixture for the connected sales chain.'
+   category_code='hotel'; seo_title='Fixture SEO'; seo_description='Fixture listing used by scripts/reservation-smoke.ps1.'
+   hero_image='https://example.invalid/http-fixture.jpg'
+   attr_property_type='Otel'; attr_room_types='["double"]'; attr_board_type='Sadece Oda'
+   attr_check_in_time='14:00'; attr_check_out_time='11:00'
+ }
  Assert ($page.StatusCode -eq 200 -and $page.Content.Contains($title)) 'supplier creates listing'
  $property=Sql "SELECT id FROM catalog.properties WHERE tenant_id='$supplier';"
- $page=Post $s "/admin/listings/$property/status" @{version='1';status='published'}
- Assert ($page.StatusCode -eq 200) 'supplier publishes'
+
+ # Contract 1.2.0: publication is a two layer state machine.
+ $version=Sql "SELECT version FROM catalog.properties WHERE id='$property';"
+ $page=Post $s "/admin/listings/$property/status" @{version=$version;status='published'}
+ Assert ($page.StatusCode -eq 403) 'supplier cannot publish before moderation'
+ $page=Post $s "/admin/listings/$property/status" @{version=$version;status='submit'}
+ Assert ($page.StatusCode -eq 200) 'supplier submits listing for review'
+ Assert ((Sql "SELECT moderation_status FROM catalog.properties WHERE id='$property';") -eq 'in_review') 'submission enters moderation'
+ $version=Sql "SELECT version FROM catalog.properties WHERE id='$property';"
+ $page=Post $s "/admin/listings/$property/status" @{version=$version;status='approved'}
+ Assert ($page.StatusCode -eq 403) 'supplier cannot approve own listing'
+ $page=Post $n "/admin/listings/$property/status" @{version=$version;status='approved'}
+ Assert ($page.StatusCode -eq 200) 'platform approves listing'
+ Assert ((Sql "SELECT status||'/'||moderation_status FROM catalog.properties WHERE id='$property';") -eq 'published/approved') 'approval publishes the listing'
+ $version=Sql "SELECT version FROM catalog.properties WHERE id='$property';"
+ $page=Post $s "/admin/listings/$property/status" @{version=$version;status='confirm_current'}
+ Assert ($page.StatusCode -eq 200) 'supplier confirms listing is current'
  $start=(Get-Date).AddDays(10).ToString('yyyy-MM-dd'); $end=(Get-Date).AddDays(12).ToString('yyyy-MM-dd')
  $page=Post $s '/admin/calendar' @{property=$property;start=$start;end=$end;price='100.00'}
  Assert ($page.Content.Contains('tamamland')) 'supplier configures calendar'
@@ -133,6 +159,17 @@ COMMIT;
  Assert ($page.Content.Contains('tamamland') -and $page.Content.Contains('cancelled')) 'supplier cancels unpaid reservation'
  $stock=Sql "SELECT coalesce(sum(held+sold),0) FROM inventory.days WHERE tenant_id='$supplier';"
  Assert ($stock -eq '0') 'stock returned after cancellation'
+ # Platform moderation lifecycle end to end: suspend, then restore to draft.
+ $version=Sql "SELECT version FROM catalog.properties WHERE id='$property';"
+ $page=Post $s "/admin/listings/$property/status" @{version=$version;status='suspended'}
+ Assert ($page.StatusCode -eq 403) 'supplier cannot suspend own listing'
+ $page=Post $n "/admin/listings/$property/status" @{version=$version;status='suspended';note='Reservation fixture suspension'}
+ Assert ($page.StatusCode -eq 200) 'platform suspends listing'
+ Assert ((Sql "SELECT status||'/'||moderation_status FROM catalog.properties WHERE id='$property';") -eq 'draft/suspended') 'suspension withdraws the listing'
+ $version=Sql "SELECT version FROM catalog.properties WHERE id='$property';"
+ $page=Post $n "/admin/listings/$property/status" @{version=$version;status='draft';note='Reservation fixture restore'}
+ Assert ($page.StatusCode -eq 200) 'platform restores suspended listing to draft'
+ Assert ((Sql "SELECT status||'/'||moderation_status FROM catalog.properties WHERE id='$property';") -eq 'draft/draft') 'restore produces a draft'
 } finally {
  Sql @"
 BEGIN;
@@ -150,6 +187,7 @@ DELETE FROM events.outbox WHERE tenant_id IN ('$supplier','$agency','$nexus');
 DELETE FROM settings.values WHERE tenant_id IN ('$supplier','$agency','$nexus');
 DELETE FROM cms.revisions WHERE slug='http-$fixture';
 DELETE FROM cms.pages WHERE slug='http-$fixture';
+DELETE FROM onboarding.applications WHERE tenant_id IN ('$supplier','$agency','$nexus');
 DELETE FROM auth.users WHERE tenant_id IN ('$supplier','$agency','$nexus');
 DELETE FROM core.organizations WHERE id IN ('$supplier','$agency','$nexus');
 COMMIT;

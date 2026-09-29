@@ -48,7 +48,7 @@ scripts\dev.cmd
 ./scripts/migrate.ps1  # Yalnız yeni migration'lar; checksum kontrolü
 ./scripts/test.ps1     # Format + Gleam testleri + DB izolasyon testleri
 ./scripts/smoke.ps1    # Çalışan sunucuda giriş/ilan/yayın/güvenlik testleri
-./scripts/reservation-smoke.ps1 # Üç şirket, ayar yetkileri ve rezervasyon HTTP testi
+./scripts/reservation-smoke.ps1 # Üç şirket, iki katmanlı moderasyon ve rezervasyon HTTP testi
 ./scripts/rotate-weak-passwords.ps1 # Bilinen zayıf parolaları döndürür, kalan varsa durur
 ```
 

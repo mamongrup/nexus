@@ -43,6 +43,20 @@ verildiğinde yeniden yayınlanabilirler.
   zaten kullandığı ve çalışan tanımdır. Üç fonksiyon artık aynı yetki kuralını paylaşır.
   `test/listing_status_transition.sql` gönderim, tedarikçi onay reddi, platform onayı ve
   askıya alma geçişlerini doğrular.
+- **Askıya alınmış ilan geri alınamıyordu.** 176 `catalog.review_listing()` için
+  `draft` kararını hiç tanımlamamıştı; platform bir ilanı askıya aldıktan sonra
+  onaylı veya taslak duruma geri getiremiyordu. Migration 182 `draft` kararını ekliyor
+  ve yalnızca `moderation_status='suspended'` iken kabul ediyor. Onaylı veya taslak
+  bir ilanın durumu keyfî değiştirilemez. `test/review_listing_decisions.sql`
+  taslak ve onaylı ilanlar için `invalid_state`, askıya alınmış ilan için `ok`
+  döndüğünü doğrular.
+- **Tedarikçi başvuru verisi kanonik kategorilerle uyumsuzdu.** `onboarding.applications`
+  içinde kanonik 17 kategoriden `visa` için onaylı başvuru yoktu; buna karşılık emekli
+  `spa` ve `package` kodları onaylı başvurularda bulunuyordu. Migration 183 `visa`
+  başvurusunu ekliyor ve emekli kodları silmek yerine `status='deleted'` yaparak
+  denetim izini koruyor. Doğrulama: 17 kanonik kategorinin tamamı onaylı başvuruya
+  sahip, emekli kodlar silinmiş durumda. Migration, uygulandıktan sonra bu koşulu
+  `DO` bloğu içinde kendisi denetler.
 - **Kategori varsayılanı emekli bir koddu.** `POST /admin/listings` kategori
   verilmediğinde `"villa"` yazıyordu. `villa` AGENTS.md'ye göre bağımsız bir ana
   kategori değil (`holiday_home` alt türü) ve `onboarding.categories` içinde pasif
@@ -71,6 +85,30 @@ verildiğinde yeniden yayınlanabilirler.
   yalnızca .NET Core'da bulunduğu için Windows'un kendi PowerShell'inde setup hiç
   çalışmıyordu. Tüm komutlar için `.cmd` sarmalayıcıları eklendi; işletim sistemi yürütme
   ilkesi değiştirilmeden çalışır.
+- **Yayın görünürlük sözleşmesi yalnızca yazma tarafında uygulanıyordu.** 180 iki
+  katmanlı durum makinesini yazma tarafında zorladı, ancak vitrini, acente kataloğunu
+  ve rezervasyon talebini okuyan fonksiyonlar 004/063 döneminden kalma yalnızca
+  `status='published'` filtresini kullanıyordu. Bunun iki somut sonucu vardı:
+  30 günden eski (bayat) ilanlar hâlâ vitrinde ve acente kataloğunda görünüyordu —
+  `catalog.published()` bu kuralı doğru tanımlıyordu ama hiçbir okuma yolundan
+  çağrılmıyordu; ve moderasyonu olmayan bir kayıt doğrudan rezervasyon talebine
+  dönüşebiliyordu, çünkü yazma koruması yalnızca `kind='supplier'` kuruluşlarını
+  denetliyor.
+
+  Migration 184 altı okuma yolunu tek sözleşmeye hizalar: `partners.agency_catalog()`,
+  `booking.request_option()`, `catalog.marketplace_listings()`,
+  `catalog.marketplace_listing_detail()`, `catalog.marketplace_listings_v2()` ve
+  `catalog.marketplace_listings_for_agency()`. Yayınlanabilir ilan artık
+  `status='published' AND moderation_status='approved'` olmalı **ve** son 30 gün içinde
+  tedarikçi tarafından teyit edilmiş olmalıdır. Bu, `catalog.published()` ile aynı
+  tanımdır. Kapsam değişmez: yalnızca okuma, hiçbir mevcut veri değiştirilmez ve
+  hiçbir ilan yayından kaldırılmaz.
+- **Acente ürün kataloğu hiç görünmüyordu.** `/admin` rotası, acente oturumu için
+  NEXUS'e özel `partners.directory()` fonksiyonunu çağırıyordu; o fonksiyon yalnızca
+  `auth.workspace()='nexus'` iken satır döndürdüğü için acente her zaman boş tablo
+  görüyor ve bağlı olduğu tedarikçilerin ürünlerine hiç ulaşamıyordu. Rota artık
+  acente için `partners.agency_catalog()` okuyor; görünüm tarafı zaten bu satır
+  biçimini destekliyordu.
 
 ## Güncellenen test ve araçlar
 
@@ -84,16 +122,28 @@ verildiğinde yeniden yayınlanabilirler.
   yayınlama reddediliyor, onaylı ilan yayınlanabiliyor ve kategori onayı geri
   çekildiğinde yeniden yayınlanamıyor.
 - `test/listing_status_transition.sql` migration 181 düzeltmesini kapsıyor.
+- `test/review_listing_decisions.sql` migration 182'nin askıya alınmış ilanı taslağa
+  döndürme kararını ve bu kararın diğer durumlara sızmamasını kapsıyor.
+- `test/publication_visibility_contract.sql` migration 184'ü kapsıyor: taslak ilan
+  hiçbir vitrinde görünmüyor; yayınlanmış, moderasyonu onaylı ve taze ilan altı okuma
+  yolunun hepsinde görünüyor; bayat ilan ve moderasyonsuz yayınlanmış ilan hiçbirinde
+  görünmüyor ve rezervasyon opsiyonu talebi alamıyor.
 - Yayınlanan tedarikçi ilanı ekleyen altı SQL test fixture'ı, sözleşmeye uygun olması
-  için `moderation_status='approved'` ile güncellendi.
+  için `moderation_status='approved'` ve `last_confirmed_at=now()` ile güncellendi; gerçek
+  `catalog.review_listing()` onayı bu iki alanı birlikte yazar.
+- `scripts/reservation-smoke.ps1` iki katmanlı moderasyonu kapsıyor: tedarikçi
+  gönderimi, platform onayı, tazelik teyidi, askıya alma ve taslağa geri alma ile
+  birlikte 45 kontrol. Fixture'a onaylı `onboarding.applications` kaydı ve sözleşmeye
+  uygun ilan alanları eklendi.
 - `scripts/rotate-weak-passwords.ps1` ve `.cmd` eklendi.
 
 ## Doğrulama
 
 - `gleam build`: uyarısız.
 - `gleam test`: 24 test, 0 hata.
-- `scripts/test.ps1`: format kontrolü + 21 `db/tests` + 9 `test/*.sql` dosyası başarılı.
+- `scripts/test.ps1`: format kontrolü + 21 `db/tests` + 10 `test/*.sql` dosyası başarılı.
 - `scripts/smoke.ps1`: 26 kontrol başarılı.
+- `scripts/reservation-smoke.ps1`: 45 kontrol başarılı.
 - Canlı kontroller: hız sınırı atlatması kapalı (15 denemede 429), yeni parola ile
   giriş 303 ve `/admin` 200, eski parola 401, kanal fiyat ucu 503.
 - Sözleşme eşitliği: 17 kategori, 78 filtre maddesi, 17 modül uyumlu.
@@ -102,11 +152,8 @@ verildiğinde yeniden yayınlanabilirler.
 
 15 Eylül 2026 paketindeki sekiz madde geçerlidir. Bu pakete ek olarak:
 
-1. Askıya alınmış ilanı (`suspended`) taslağa döndürme geçişi veritabanında tanımlı,
-   ancak HTTP rotası yalnızca `approved`, `changes_requested` ve `suspended`
-   kararlarını kabul ediyor. Platform bu geçişi arayüzden yapamıyor.
-2. Tedarikçi başvuru verisinde kanonik 17 kategoriden `visa` eksik; `spa` ve `package`
-   gibi emekli kodlar hâlâ onaylı başvurularda bulunuyor.
-3. `scripts/reservation-smoke.ps1` iki katmanlı moderasyon akışını kapsamıyor.
-4. Yayın kalite kapısı eksik: çok dilli içerik, semantik HTML ve görsel doğrulaması
+1. Yayın kalite kapısı eksik: çok dilli içerik, semantik HTML ve görsel doğrulaması
    hâlâ uygulanmıyor (15 Eylül listesinin 6. maddesi).
+2. `catalog.published()` hâlâ hiçbir okuma yolundan çağrılmıyor; aynı sözleşme 184
+  ile her okuma fonksiyonuna elle yazıldı. Ortak bir `catalog.is_publishable()`
+   yardımcısına taşınması, bir sonraki alanın unutulma riskini kaldırır.

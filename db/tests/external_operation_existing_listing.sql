@@ -7,10 +7,10 @@ BEGIN
  INSERT INTO auth.users(id,tenant_id,email,password_hash,display_name,role) VALUES(u,t,u::text||'@example.invalid','disabled','Test','owner');
  INSERT INTO onboarding.applications(owner_user_id,tenant_id,category_code,legal_name,status,identity_status)
  VALUES(u,t,'hotel','External truth fixture','approved','verified');
- INSERT INTO catalog.properties(id,tenant_id,title,description,locality,capacity,nightly_minor,currency,category_code,attributes,seo_title,seo_description,media,status,moderation_status)
+ INSERT INTO catalog.properties(id,tenant_id,title,description,locality,capacity,nightly_minor,currency,category_code,attributes,seo_title,seo_description,media,status,moderation_status,last_confirmed_at)
  VALUES(p,t,'Real fixture','External operation truth test listing','Test',2,10000,'TRY','hotel',
         '{"room_type":"double","property_type":"hotel","room_types":"double","board_type":"room_only","check_in_time":"14:00","check_out_time":"11:00"}'::jsonb,
-        'Real fixture','External operation truth test listing','["https://example.invalid/external-fixture.jpg"]'::jsonb,'published','approved');
+        'Real fixture','External operation truth test listing','["https://example.invalid/external-fixture.jpg"]'::jsonb,'published','approved',now());
  PERFORM set_config('app.tenant_id',t::text,true),set_config('app.actor_id',u::text,true);
  -- Use a real property and valid owner context: random missing IDs hid the regression.
  SET LOCAL ROLE nexus_app;

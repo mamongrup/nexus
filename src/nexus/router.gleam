@@ -4996,9 +4996,14 @@ fn partners_page(
   case s.workspace == "supplier" && !requests {
     True -> wisp.response(403)
     False -> {
-      let sql = case requests {
-        True -> "select * from booking.requests()"
-        False -> "select * from partners.directory()"
+      // partners.directory() is the NEXUS partner administration view and only
+      // returns rows when the caller is a platform operator. An agency session
+      // therefore saw an empty table and could not reach the products of the
+      // suppliers it is connected to; it must read its own catalog instead.
+      let sql = case requests, s.workspace {
+        True, _ -> "select * from booking.requests()"
+        False, "agency" -> "select * from partners.agency_catalog()"
+        False, _ -> "select * from partners.directory()"
       }
       case calendar.rows(conn, s, sql) {
         Ok(rows) ->
