@@ -67,6 +67,13 @@ BEGIN
   SELECT count(*) INTO visible FROM catalog.marketplace_listings_for_agency(a::text) r WHERE r.id = p::text;
   IF visible <> 1 THEN RAISE EXCEPTION 'published listing missing from the agency portfolio'; END IF;
 
+  -- 3b. The agency listing feed, which is what the agency app actually calls.
+  SELECT count(*) INTO visible FROM catalog.agency_listing_feed(a::text,'','','') r WHERE r.id = p::text;
+  IF visible <> 1 THEN RAISE EXCEPTION 'published listing missing from the agency feed'; END IF;
+  SELECT count(*) INTO visible FROM catalog.agency_listing_feed(a::text,'','','') r
+   WHERE r.id IN (stale::text, unmoderated::text);
+  IF visible <> 0 THEN RAISE EXCEPTION 'stale or unmoderated listing reached the agency feed'; END IF;
+
   -- 4. The stale listing is published but outside the 30 day freshness window.
   SELECT count(*) INTO visible FROM catalog.marketplace_listings('','','') r WHERE r.data[1] = stale::text;
   IF visible <> 0 THEN RAISE EXCEPTION 'stale listing stayed in the public catalogue'; END IF;
@@ -101,6 +108,25 @@ BEGIN
   IF answer <> 'not_found' THEN RAISE EXCEPTION 'option request accepted for a stale listing: %', answer; END IF;
   answer := booking.request_option(unmoderated::text,(current_date+30)::text,(current_date+32)::text,30,'visibility-unmoderated-key');
   IF answer <> 'not_found' THEN RAISE EXCEPTION 'option request accepted for an unmoderated listing: %', answer; END IF;
+
+  -- 8. The inventory feed is the leak 185 closes. Before it, this function
+  --    carried no publication filter at all: an active connection plus a
+  --    policy was enough to read the daily price and availability of a draft
+  --    or suspended listing.
+  INSERT INTO inventory.resources(id,tenant_id,property_id,name)
+    SELECT gen_random_uuid(),tenant_id,id,title FROM catalog.properties WHERE id IN (p,stale,unmoderated);
+  INSERT INTO inventory.days(tenant_id,resource_id,service_date,capacity,nightly_minor)
+    SELECT r.tenant_id,r.id,(current_date+40)::date,5,10000
+    FROM inventory.resources r
+    JOIN catalog.properties prop ON prop.id=r.property_id AND prop.tenant_id=r.tenant_id
+    WHERE prop.id IN (p,stale,unmoderated);
+
+  SELECT count(*) INTO visible FROM inventory.agency_inventory_feed(a::text,p::text);
+  IF visible <> 1 THEN RAISE EXCEPTION 'inventory rows missing for a visible listing: %', visible; END IF;
+  SELECT count(*) INTO visible FROM inventory.agency_inventory_feed(a::text,stale::text);
+  IF visible <> 0 THEN RAISE EXCEPTION 'inventory feed exposed a stale listing: %', visible; END IF;
+  SELECT count(*) INTO visible FROM inventory.agency_inventory_feed(a::text,unmoderated::text);
+  IF visible <> 0 THEN RAISE EXCEPTION 'inventory feed exposed an unmoderated listing: %', visible; END IF;
 
   RAISE NOTICE 'PASS: publication visibility contract holds on every read path';
 END $$;

@@ -26,6 +26,7 @@ import nexus/checkin_view
 import nexus/commercial_engine
 import nexus/connection_requests_view
 import nexus/contact_inbox
+import nexus/contract
 import nexus/crm_view
 import nexus/database as db
 import nexus/departments_view
@@ -1031,7 +1032,9 @@ fn api_feed_listings(
                 <> "]"
 
               let response_body =
-                "{\"ok\":true,\"contract_version\":\"1.1.0\",\"count\":"
+                "{\"ok\":true,"
+                <> contract.version_field()
+                <> ",\"count\":"
                 <> int.to_string(list.length(rows))
                 <> ",\"listings\":"
                 <> listings_json
@@ -1087,7 +1090,9 @@ fn api_contract_state(
         <> "]"
 
       let body =
-        "{\"ok\":true,\"contract_version\":\"1.1.0\",\"contract_state\":"
+        "{\"ok\":true,"
+        <> contract.version_field()
+        <> ",\"contract_state\":"
         <> state_json
         <> "}"
       wisp.ok()
@@ -1156,7 +1161,9 @@ fn api_contract_categories(
     <> "{\"code\":\"bus\",\"title\":\"Otobüs\"}]"
 
   let body =
-    "{\"ok\":true,\"contract_version\":\"1.1.0\",\"categories\":"
+    "{\"ok\":true,"
+    <> contract.version_field()
+    <> ",\"categories\":"
     <> categories_json
     <> ",\"contract_state\":"
     <> state_json
