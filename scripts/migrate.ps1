@@ -17,6 +17,12 @@ function Get-MigrationChecksum($path) {
 $appPassword = $env:PGPASSWORD
 try {
   $env:PGPASSWORD = $env:PGOWNER_PASSWORD
+  # Wrong-database guard: the acente project's root schema is 'agency'. If it
+  # exists in the target database, .env points at an agency database and the
+  # platform migration chain must never touch it.
+  $foreignSchema = ((& $Psql -X -w -U $env:PGOWNER -Atc "SELECT count(*) FROM pg_namespace WHERE nspname='agency'") | Out-String).Trim()
+  if ($LASTEXITCODE -ne 0) { throw 'Yanlış veritabanı kontrolü çalıştırılamadı' }
+  if ($foreignSchema -ne '0') { throw "Hedef veritabanı bir acente veritabanı gibi görünüyor: 'agency' şeması mevcut ($($env:PGDATABASE)). Platform migration'ları uygulanmadı; .env içindeki PGDATABASE/PGPORT değerlerini kontrol edin." }
   & $Psql -X -w -U $env:PGOWNER -v ON_ERROR_STOP=1 -c 'CREATE SCHEMA IF NOT EXISTS system; CREATE TABLE IF NOT EXISTS system.schema_migrations (version text PRIMARY KEY, checksum text NOT NULL, applied_at timestamptz NOT NULL DEFAULT now());'
   if ($LASTEXITCODE -ne 0) { throw 'Migration tablosu oluşturulamadı' }
   foreach($file in Get-ChildItem -LiteralPath "$ProjectRoot/db/migrations" -Filter '*.sql' | Sort-Object Name) {
