@@ -45,6 +45,9 @@ jobs:
       # 001'in GRANT'ları için var olmalı (CI'da uygulama bağlanmaz).
       - name: Prepare platform database
         shell: bash
+        env:
+          # Servis parolası: POSTGRES_PASSWORD ile aynı (rol/DB kurulumu).
+          PGPASSWORD: postgres
         run: |
           psql -h 127.0.0.1 -U postgres -d postgres -v ON_ERROR_STOP=1 -c "CREATE ROLE nexus_owner LOGIN PASSWORD 'ci-nexus-owner';"
           psql -h 127.0.0.1 -U postgres -d postgres -v ON_ERROR_STOP=1 -c "CREATE ROLE nexus_app LOGIN PASSWORD 'ci-nexus-app';"
