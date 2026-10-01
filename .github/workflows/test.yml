@@ -10,6 +10,25 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+
+    # Platformun tam kapısı (scripts/test.ps1) Windows'a özgü parçalarla
+    # çalışır; bu iş aynı diziyi Linux'ta eşler: rol/DB hazırlığı →
+    # migration'lar → gleam test (REQUIRE_TEST_DB=true: DB bağımlı testler
+    # gürültülü; DB yoksa sessiz [SKIP] YASAK) → SQL kabul katmanı
+    # (test/*.sql; db/tests/*.sql zinciri Windows kapısında kalır).
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
     steps:
       - uses: actions/checkout@v7
       - uses: erlef/setup-beam@v1
@@ -19,5 +38,43 @@ jobs:
           rebar3-version: "3"
           # elixir-version: "1"
       - run: gleam deps download
-      - run: gleam test
+
+      # Rol/DB hazırlığı + migrate.ps1'in okuduğu .env (env.ps1 .env ister).
+      # nexus_owner migration'ları uygular; pgcrypto PG15+'ta trusted
+      # extension olduğu için süperkullanıcı gerekmez. nexus_app yalnızca
+      # 001'in GRANT'ları için var olmalı (CI'da uygulama bağlanmaz).
+      - name: Prepare platform database
+        shell: bash
+        run: |
+          psql -h 127.0.0.1 -U postgres -d postgres -v ON_ERROR_STOP=1 -c "CREATE ROLE nexus_owner LOGIN PASSWORD 'ci-nexus-owner';"
+          psql -h 127.0.0.1 -U postgres -d postgres -v ON_ERROR_STOP=1 -c "CREATE ROLE nexus_app LOGIN PASSWORD 'ci-nexus-app';"
+          psql -h 127.0.0.1 -U postgres -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE nexustraveltech OWNER nexus_owner;"
+          printf 'PGHOST=127.0.0.1\nPGPORT=5432\nPGDATABASE=nexustraveltech\nPGUSER=postgres\nPGPASSWORD=postgres\nPGOWNER=nexus_owner\nPGOWNER_PASSWORD=ci-nexus-owner\n' > .env
+
+      - name: Apply migrations
+        shell: pwsh
+        run: ./scripts/migrate.ps1
+
+      # DB bağımlı gleam testleri gürültülü: DB erişilemezse kırılır.
+      - name: Gleam tests (REQUIRE_TEST_DB=true)
+        env:
+          PGHOST: 127.0.0.1
+          PGPORT: "5432"
+          PGDATABASE: nexustraveltech
+          PGOWNER: nexus_owner
+          PGOWNER_PASSWORD: ci-nexus-owner
+          REQUIRE_TEST_DB: "true"
+        run: gleam test
+
+      - name: SQL acceptance tests
+        shell: bash
+        env:
+          PGPASSWORD: ci-nexus-owner
+        run: |
+          for f in test/*.sql; do
+            echo "::group::$f"
+            psql -X -w -h 127.0.0.1 -p 5432 -U nexus_owner -d nexustraveltech -v ON_ERROR_STOP=1 -f "$f" || exit 1
+            echo "::endgroup::"
+          done
+
       - run: gleam format --check src test
