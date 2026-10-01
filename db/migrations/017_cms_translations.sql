@@ -4,6 +4,13 @@ CREATE TABLE cms.translations (
 CREATE TABLE cms.translation_jobs (
  id uuid PRIMARY KEY DEFAULT gen_random_uuid(), slug text NOT NULL REFERENCES cms.pages ON DELETE CASCADE, source_locale text NOT NULL REFERENCES core.locales, target_locale text NOT NULL REFERENCES core.locales, source_version bigint NOT NULL, provider text NOT NULL DEFAULT 'configured_ai', status text NOT NULL DEFAULT 'queued' CHECK(status IN ('queued','running','completed','failed','cancelled')), attempts int NOT NULL DEFAULT 0, error text, created_by uuid NOT NULL REFERENCES auth.users, created_at timestamptz NOT NULL DEFAULT now(), UNIQUE(slug,source_version,source_locale,target_locale)
 );
+-- Fresh-install safety: translations seed and translate_all reference the
+-- six supported base locales. Nothing in the chain seeds core.locales (only
+-- 110 adds zh), so on an empty cluster the FK below would fail. Seed them
+-- idempotently here; live DBs keep whatever richer set they already have.
+INSERT INTO core.locales(code,label,direction)
+VALUES ('tr','Türkçe','ltr'),('en','English','ltr'),('de','Deutsch','ltr'),('ru','Русский','ltr'),('ar','العربية','rtl'),('fr','Français','ltr')
+ON CONFLICT (code) DO NOTHING;
 ALTER TABLE cms.translations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE cms.translation_jobs ENABLE ROW LEVEL SECURITY;
 INSERT INTO cms.translations(slug,locale,title,summary,body,status,source_locale,translated_by) SELECT slug,'tr',title,summary,body,CASE WHEN published IS NULL THEN 'draft' ELSE 'published' END,'tr','seed' FROM cms.pages ON CONFLICT(slug,locale) DO NOTHING;

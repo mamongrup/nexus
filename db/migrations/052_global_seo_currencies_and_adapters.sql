@@ -15,6 +15,13 @@ CREATE TABLE IF NOT EXISTS core.fx_rates (
   PRIMARY KEY(base_currency, target_currency)
 );
 
+-- Fresh-install safety: fx_rates references these currencies; nothing in
+-- the chain seeds core.currencies (only 110 adds CNY). Seed idempotently;
+-- live DBs keep whatever richer set they already have.
+INSERT INTO core.currencies(code, minor_digits) VALUES
+  ('TRY',2),('EUR',2),('USD',2),('GBP',2),('CHF',2),('AED',2)
+ON CONFLICT (code) DO NOTHING;
+
 INSERT INTO core.fx_rates(base_currency, target_currency, rate_multiplier) VALUES
   ('TRY', 'TRY', 1.000000),
   ('EUR', 'EUR', 1.000000),

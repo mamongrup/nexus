@@ -434,6 +434,17 @@ DECLARE
   v_res_id uuid;
   v_d date;
 BEGIN
+  -- Fresh-install safety: the demo listings reference this demo supplier
+  -- organization; create it idempotently (live DBs keep their richer set).
+  INSERT INTO core.organizations(id, legal_name)
+  VALUES (v_supp_id, 'NEXUS Demo Supplier')
+  ON CONFLICT (id) DO UPDATE SET legal_name = EXCLUDED.legal_name;
+  -- Demo supplier account: later migrations (e.g. 183 category alignment)
+  -- target supplier@nexus.local; create it idempotently.
+  INSERT INTO auth.users(tenant_id, email, display_name, role, password_hash)
+  VALUES (v_supp_id, 'supplier@nexus.local', 'NEXUS Demo Supplier', 'owner',
+          crypt('admin123456', gen_salt('bf')))
+  ON CONFLICT (email) DO UPDATE SET display_name = EXCLUDED.display_name;
   -- Listing 1: Bodrum Sunset Luxury Infinity Pool Villa
   INSERT INTO catalog.properties (
     id, tenant_id, title, locality, category_code, capacity, nightly_minor, currency, status, description,

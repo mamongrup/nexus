@@ -50,3 +50,36 @@ BEGIN
       currency = excluded.currency;
   END LOOP;
 END $$;
+
+-- Fresh-install safety: agency-side availability sync and the reservation
+-- flow need an ACTIVE demo supplier-agency connection with a permissive
+-- policy; nothing in the chain seeds one (the live DB got them historically).
+-- Idempotent: re-running or richer live data keeps their own state.
+DO $$
+DECLARE
+  v_supplier uuid := '33333333-3333-4333-8333-333333333333';
+  v_agency uuid := '55555555-5555-4555-8555-555555555555';
+BEGIN
+  INSERT INTO core.organizations(id, legal_name, kind)
+  VALUES (v_agency, 'NEXUS Demo Agency', 'agency')
+  ON CONFLICT (id) DO UPDATE SET legal_name = EXCLUDED.legal_name;
+  -- Demo platform operator (kind='nexus') with an owner account: control
+  -- center and settings surfaces require one; nothing in the chain seeds it
+  -- (live DBs got theirs historically). Idempotent upsert by email keeps
+  -- existing live accounts on their own tenant.
+  INSERT INTO core.organizations(id, legal_name, kind)
+  VALUES ('66666666-6666-4666-8666-666666666666', 'NEXUS Platform', 'nexus')
+  ON CONFLICT (id) DO UPDATE SET legal_name = EXCLUDED.legal_name;
+  INSERT INTO auth.users(tenant_id, email, display_name, role, password_hash)
+  VALUES ('66666666-6666-4666-8666-666666666666', 'admin@nexus.local', 'NEXUS Platform Admin', 'owner',
+          crypt('admin123456', gen_salt('bf')))
+  ON CONFLICT (email) DO UPDATE SET display_name = EXCLUDED.display_name;
+  INSERT INTO partners.connections(supplier_id, agency_id, status, updated_at)
+  VALUES (v_supplier, v_agency, 'active', now())
+  ON CONFLICT (supplier_id, agency_id) DO UPDATE
+    SET status = 'active', updated_at = now();
+  INSERT INTO partners.connection_policies(agency_id, allowed_categories, listing_limit, active, updated_at)
+  VALUES (v_agency, '[]'::jsonb, 100, true, now())
+  ON CONFLICT (agency_id) DO UPDATE
+    SET allowed_categories = '[]'::jsonb, listing_limit = 100, active = true, updated_at = now();
+END $$;

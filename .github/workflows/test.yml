@@ -52,6 +52,9 @@ jobs:
           psql -h 127.0.0.1 -U postgres -d postgres -v ON_ERROR_STOP=1 -c "CREATE ROLE nexus_owner LOGIN PASSWORD 'ci-nexus-owner';"
           psql -h 127.0.0.1 -U postgres -d postgres -v ON_ERROR_STOP=1 -c "CREATE ROLE nexus_app LOGIN PASSWORD 'ci-nexus-app';"
           psql -h 127.0.0.1 -U postgres -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE nexustraveltech OWNER nexus_owner;"
+          # db/tests isolation testleri SET ROLE nexus_app ile uygulama
+          # yetkilerine gecer; owner bu rolun uyesi olmali (PG16+ SET hakki).
+          psql -h 127.0.0.1 -U postgres -d postgres -v ON_ERROR_STOP=1 -c "GRANT nexus_app TO nexus_owner;"
           printf 'PGHOST=127.0.0.1\nPGPORT=5432\nPGDATABASE=nexustraveltech\nPGUSER=postgres\nPGPASSWORD=postgres\nPGOWNER=nexus_owner\nPGOWNER_PASSWORD=ci-nexus-owner\n' > .env
 
       - name: Apply migrations
@@ -74,6 +77,34 @@ jobs:
         env:
           PGPASSWORD: ci-nexus-owner
         run: |
+          # Faz 1: sirali zincir — fixture'lari kurar. Sirayi scripts/test.ps1
+          # ile ayni tut (Windows kapisiyla senkron).
+          for f in db/tests/isolation.sql \
+            db/tests/reservation_lifecycle.sql \
+            db/tests/settings_isolation.sql \
+            db/tests/cms.sql \
+            db/tests/ai_scope.sql \
+            db/tests/ai_governance_and_finance.sql \
+            db/tests/external_operation_truth.sql \
+            db/tests/external_operation_existing_listing.sql \
+            db/tests/frozen_quote_ledger.sql \
+            db/tests/operational_provider_truth.sql \
+            db/tests/external_operation_queue.sql \
+            db/tests/external_operation_worker.sql \
+            db/tests/external_operation_retry.sql \
+            db/tests/marketplace_feed_v2.sql \
+            db/tests/cny_currency.sql \
+            db/tests/listing_module_scope.sql \
+            db/tests/listing_review.sql \
+            db/tests/supplier_application.sql \
+            db/tests/sector_benchmarking.sql \
+            db/tests/elite_hospitality_suite.sql \
+            db/tests/category_values.sql; do
+            echo "::group::$f"
+            psql -X -w -h 127.0.0.1 -p 5432 -U nexus_owner -d nexustraveltech -v ON_ERROR_STOP=1 -f "$f" || exit 1
+            echo "::endgroup::"
+          done
+          # Faz 2: test/*.sql kabul katmani (zincir fixture'larina dayanir).
           for f in test/*.sql; do
             echo "::group::$f"
             psql -X -w -h 127.0.0.1 -p 5432 -U nexus_owner -d nexustraveltech -v ON_ERROR_STOP=1 -f "$f" || exit 1
