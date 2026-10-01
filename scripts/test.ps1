@@ -3,6 +3,8 @@ Set-Location -LiteralPath $ProjectRoot
 & "$PSScriptRoot/prepare-build.ps1"
 gleam format --check
 if ($LASTEXITCODE -ne 0) { throw 'Format kontrolü başarısız' }
+# DB entegrasyon kendi-testleri bu kapıda gürültülü kırılsın (DB burada var).
+$env:REQUIRE_TEST_DB = "true"
 gleam test
 if ($LASTEXITCODE -ne 0) { throw 'Birim testleri başarısız' }
 $appPassword=$env:PGPASSWORD
