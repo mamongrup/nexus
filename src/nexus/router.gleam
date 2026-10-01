@@ -5,6 +5,7 @@ import gleam/dynamic/decode
 import gleam/float
 import gleam/http
 import gleam/http/request
+import gleam/http/response as http_response
 import gleam/int
 import gleam/json
 import gleam/list
@@ -40,6 +41,7 @@ import nexus/hr_view
 import nexus/listing_modules_view
 import nexus/marketplace_view
 import nexus/modules_view
+import nexus/nexus_sec
 import nexus/onboarding_view
 import nexus/partners_view
 import nexus/platform_control_view
@@ -56,6 +58,7 @@ import nexus/view
 import pog
 import simplifile
 import wisp
+import wisp/internal
 
 pub fn handle(
   req: wisp.Request,
@@ -78,22 +81,239 @@ pub fn handle(
       let csrf =
         wisp.get_cookie(req, "nexus_csrf", wisp.Signed)
         |> result.unwrap(wisp.random_string(32))
-      route(req, conn, csrf, origin, peer)
-      |> wisp.set_cookie(req, "nexus_csrf", csrf, wisp.Signed, 28_800)
+      // CSP ihlal raporları ana dispatch'e girmez: kendi hız limiti ve
+      // kapısı vardır, tarayıcı oturumu/CSRF gerektirmez.
+      let response = case csp_report_request(req) {
+        True -> handle_csp_report(req, conn, peer)
+        False ->
+          // SECRET_KEY_BASE rotasyon penceresi (çift sırlı doğrulama):
+          // previous-era tanımlıysa ve oturum çerezi yalnız eski sır altında
+          // doğrulanıyorsa istek previous bağlantıyla işlenir ve yanıt
+          // current-era sır ile yeniden damgalanır; kullanıcı zorunlu
+          // çıkışa düşmez. Pencere kapalıyken davranış değişmez.
+          case rotate_secret(req) {
+            Ok(#(migrated_req, session_token)) ->
+              route(migrated_req, conn, csrf, origin, peer)
+              |> wisp.set_cookie(
+                migrated_req,
+                "nexus_csrf",
+                csrf,
+                wisp.Signed,
+                28_800,
+              )
+              |> restamp_session_cookie(
+                with_secret(migrated_req, current_app_secret()),
+                session_token,
+              )
+            Error(req) ->
+              route(req, conn, csrf, origin, peer)
+              |> wisp.set_cookie(req, "nexus_csrf", csrf, wisp.Signed, 28_800)
+          }
+      }
+      response
       |> wisp.set_header("cache-control", "no-store")
       |> wisp.set_header("x-content-type-options", "nosniff")
       |> wisp.set_header("x-frame-options", "DENY")
       |> wisp.set_header("referrer-policy", "same-origin")
-      |> wisp.set_header(
-        "content-security-policy",
-        "default-src 'self'; img-src 'self' data: https:; media-src 'self' data: https: blob:; frame-src 'self' https://www.youtube.com https://www.youtube-nocookie.com https://player.vimeo.com; style-src 'self' 'unsafe-inline'; font-src 'self' data: https:; form-action 'self'; frame-ancestors 'none'; base-uri 'none'",
-      )
+      |> fn(res) {
+        nexus_sec.apply_headers(
+          wisp.set_header,
+          res,
+          nexus_sec.csp_headers(csp_report_only()),
+        )
+      }
     }
   }
 }
 
 fn html(body: String) {
   wisp.ok() |> wisp.html_body(body)
+}
+
+// ---------------------------------------------------------------------------
+// CSP ihlal raporlama (POST /api/csp-report).
+//
+// CSP_REPORT_ONLY kademeli geçişinde ihlalleri toplar; enforcing modda da
+// rapor akışı sinyal olarak sürer. Kayıt hedefi nexus.security_events
+// (db/migrations/186); günlük özet scripts/daily-csp-report.ps1.
+// ---------------------------------------------------------------------------
+
+fn csp_report_request(req: wisp.Request) -> Bool {
+  case req.method, wisp.path_segments(req) {
+    http.Post, ["api", "csp-report"] -> True
+    _, _ -> False
+  }
+}
+
+fn handle_csp_report(
+  req: wisp.Request,
+  conn: pog.Connection,
+  peer: String,
+) -> wisp.Response {
+  // Abuselere karşı: istemci başına dakikada 20 rapor.
+  case
+    rate_limited("csp-report:" <> request_client_id(req, peer), 20, 60_000.0)
+  {
+    True ->
+      wisp.response(429)
+      |> wisp.set_header("retry-after", "60")
+      |> wisp.string_body("")
+    False ->
+      case request.get_header(req, "content-type") {
+        Ok("application/csp-report" <> _) ->
+          case wisp.read_body_bits(req) {
+            Error(_) -> wisp.response(400) |> wisp.string_body("")
+            Ok(bits) -> {
+              let size = bit_array.byte_size(bits)
+              // 16 KB üstü rapor zaten bozuk/suistimal; kaydetmeden reddet.
+              case size > 16_384 {
+                True -> wisp.response(413) |> wisp.string_body("")
+                False -> {
+                  let _ = record_csp_violation(conn, req, peer, bits)
+                  wisp.response(204) |> wisp.string_body("")
+                }
+              }
+            }
+          }
+        // Diğer içerik tipleri kabul edilmez (report-uri spec'i JSON
+        // gövdeyi application/csp-report ile gönderir).
+        _ -> wisp.response(415) |> wisp.string_body("")
+      }
+  }
+}
+
+fn record_csp_violation(
+  conn: pog.Connection,
+  req: wisp.Request,
+  peer: String,
+  bits: BitArray,
+) -> Nil {
+  let body_text = bit_array.to_string(bits) |> result.unwrap("")
+  let _ =
+    "select nexus.record_security_event($1, $2, $3, $4, $5, $6, $7, $8::jsonb)"
+    |> pog.query()
+    |> pog.parameter(pog.text(request_id(req)))
+    |> pog.parameter(pog.text(request_client_id(req, peer)))
+    |> pog.parameter(pog.text(http.method_to_string(req.method)))
+    |> pog.parameter(pog.text("csp-report"))
+    |> pog.parameter(pog.text("csp_violation"))
+    |> pog.parameter(pog.text("info"))
+    |> pog.parameter(pog.text("observed"))
+    |> pog.parameter(pog.text(body_text))
+    |> pog.execute(conn)
+  Nil
+}
+
+fn request_id(req: wisp.Request) -> String {
+  let supplied =
+    request.get_header(req, "x-request-id")
+    |> result.unwrap("")
+    |> string.trim
+    |> string.slice(0, 128)
+  case supplied {
+    "" -> "req-" <> wisp.random_string(24)
+    value -> value
+  }
+}
+
+// ---------------------------------------------------------------------------
+// SECRET_KEY_BASE rotasyon penceresi (çift sırlı doğrulama).
+//
+// Rotasyon, eski sır altında imzalanmış nexus_session çerezlerinin tümünü
+// geçersiz kılardı: kullanıcılar bir sonraki istekte anonim kalır ve zorunlu
+// çıkış yapardı. Bu pencere eski imzayı tanıyıp isteği current-era
+// bağlantıyla işler ve yanıt çerezini yeni sır ile yeniden damgalar.
+// Dönem kararı nexus_sec.resolve_secret_era saf fonksiyonundadır.
+//
+// Kapsam notu: pencere yalnızca oturum çerezini kurtarır; sırrın tümden
+// sızdığı bir acil durumda sadece rotasyon yetmez — previous sırrı hiç
+// tanımlamadan rotasyon yapın ve tüm oturum jetonlarını iptal edin.
+//
+fn with_secret(req: wisp.Request, secret: String) -> wisp.Request {
+  request.Request(
+    ..req,
+    body: internal.Connection(..req.body, secret_key_base: secret),
+  )
+}
+
+fn current_app_secret() -> String {
+  envoy.get("SECRET_KEY_BASE") |> result.unwrap("")
+}
+
+fn previous_app_secret() -> Result(String, Nil) {
+  case envoy.get("SECRET_KEY_BASE_PREVIOUS") {
+    Ok(previous) if previous != "" -> Ok(previous)
+    _ -> Error(Nil)
+  }
+}
+
+fn csp_report_only() -> Bool {
+  nexus_sec.report_only_mode(envoy.get("CSP_REPORT_ONLY") |> result.unwrap(""))
+}
+
+/// current-era imzası geçerliyse pencere açılmaz; yalnızca current geçersizken
+/// previous tanınıyorsa previous-era çerezi kabul edilir. Dönen istek previous
+/// bağlantısıyla taşınır; yanıt restamp_session_cookie ile current sır ile
+/// yeniden damgalanmalıdır.
+fn rotate_secret(
+  req: wisp.Request,
+) -> Result(#(wisp.Request, String), wisp.Request) {
+  let current_valid =
+    wisp.get_cookie(req, "nexus_session", wisp.Signed) |> result.is_ok
+  case previous_app_secret() {
+    Error(_) -> Error(req)
+    Ok(previous) -> {
+      let previous_valid =
+        wisp.get_cookie(
+          with_secret(req, previous),
+          "nexus_session",
+          wisp.Signed,
+        )
+        |> result.is_ok
+      case nexus_sec.resolve_secret_era(current_valid, previous_valid) {
+        Ok(nexus_sec.Previous) ->
+          case
+            wisp.get_cookie(
+              with_secret(req, previous),
+              "nexus_session",
+              wisp.Signed,
+            )
+          {
+            Ok(session_token) ->
+              Ok(#(with_secret(req, previous), session_token))
+            Error(_) -> Error(req)
+          }
+        _ -> Error(req)
+      }
+    }
+  }
+}
+
+/// Previous-era kabulünden sonra nexus_session çerezini current sır ile
+/// yeniden damgalar. Login (303 -> /admin) ve logout (303 -> /login)
+/// yanıtları atlanır: login kendi fresh çerezini yazar; logout'un çerez
+/// silme (max_age=0) yönergesi diriltilemez. Karar nexus_sec.should_restamp.
+fn restamp_session_cookie(
+  res: wisp.Response,
+  req: wisp.Request,
+  session_token: String,
+) -> wisp.Response {
+  let location = case http_response.get_header(res, "location") {
+    Ok(value) -> value
+    Error(_) -> ""
+  }
+  case nexus_sec.should_restamp(res.status, location) {
+    False -> res
+    True ->
+      wisp.set_cookie(
+        res,
+        req,
+        "nexus_session",
+        session_token,
+        wisp.Signed,
+        28_800,
+      )
+  }
 }
 
 const security_rate_limit_cache_key = "nexus:security_rate_limits"
@@ -365,6 +585,18 @@ fn secret_matches(presented: String, expected: String) -> Bool {
   }
 }
 
+/// Form CSRF token comparison. The token is compared in constant time so the
+/// response duration does not leak how many characters of the expected token
+/// an attacker guessed; lengths always differ for wrong guesses, which
+/// secure_compare already rejects without early exit on content.
+fn csrf_matches(presented: String, expected: String) -> Bool {
+  secure_compare_ffi(presented, expected)
+}
+
+fn secure_form_csrf(values: List(#(String, String)), csrf: String) -> Bool {
+  csrf_matches(field(values, "csrf"), csrf)
+}
+
 /// Authorise a platform level agency request with the dedicated integration key.
 ///
 /// `NEXUS_CONFIG_KEY` is deliberately not accepted here. It is the AES-256-GCM
@@ -526,7 +758,7 @@ fn authorized_form(
 ) {
   use form <- wisp.require_form(req)
   case
-    field(form.values, "csrf") == csrf
+    secure_form_csrf(form.values, csrf)
     && request.get_header(req, "origin") == Ok(origin)
   {
     True -> run(form.values)
@@ -534,6 +766,67 @@ fn authorized_form(
       wisp.response(403)
       |> wisp.set_header("content-type", "text/plain; charset=utf-8")
       |> wisp.string_body("Güvenlik doğrulaması başarısız. Sayfayı yenileyin.")
+  }
+}
+
+/// GET /v1/secret-rotation-window — rotasyon penceresinin operasyonel
+/// görünümü: her sır için ayrı kayıt (SECRET_KEY_BASE + NEXUS_CONFIG_KEY),
+/// yasi ayri raporlanır. /health service/database durumunu raporlamaya
+/// devam eder; pencere ayrı uçta izlenir ki izleme sistemi ayrı alarm
+/// kurabilsin. Bilinen her durum (unknown/open/expired) 200 ile raporlanır
+/// — durum bilgi taşıyıcısıdır; fail-closed zorlaması
+/// scripts/check-secret-hygiene.ps1 ve production gates'tedir. Sadece DB
+/// okunamadığında 503 döner.
+fn secret_rotation_window(conn: pog.Connection) -> wisp.Response {
+  case db.rotation_window(conn) {
+    Ok(rows) ->
+      wisp.response(200)
+      |> wisp.json_body(
+        json.to_string(
+          json.object([
+            #(
+              "secrets",
+              json.array(rows, fn(row) {
+                let #(secret, state, age, window) = row
+                json.object([
+                  #("secret", json.string(secret)),
+                  #("state", json.string(state)),
+                  #("age_hours", json.string(age)),
+                  #("window_hours", json.string(window)),
+                  #("reminder", json.string(window_reminder(secret, state))),
+                ])
+              }),
+            ),
+          ]),
+        ),
+      )
+    Error(_) ->
+      wisp.response(503)
+      |> wisp.json_body(
+        json.to_string(
+          json.object([
+            #("secrets", json.array([], fn(_row) { json.null() })),
+            #("state", json.string("unavailable")),
+          ]),
+        ),
+      )
+  }
+}
+
+fn window_reminder(secret: String, state: String) -> String {
+  case state {
+    "open" ->
+      case secret {
+        "SECRET_KEY_BASE" ->
+          "SECRET_KEY_BASE_PREVIOUS must be removed within the window"
+        _ -> "Age is informational; no PREVIOUS counterpart for this secret"
+      }
+    "expired" ->
+      case secret {
+        "SECRET_KEY_BASE" -> "SECRET_KEY_BASE_PREVIOUS must be removed now"
+        _ -> "Rotate NEXUS_CONFIG_KEY and re-encrypt affected settings"
+      }
+    _ -> "No rotation record: run scripts/record-secret-rotation.ps1"
   }
 }
 
@@ -545,8 +838,15 @@ fn route(
   peer: String,
 ) {
   case req.method, wisp.path_segments(req) {
+    http.Get, ["v1", "secret-rotation-window"] -> secret_rotation_window(conn)
     http.Get, ["v1", "health"] -> {
       let ok = db.healthy(conn)
+      // Rotasyon özeti yalnız DB sağlıyken sorgulanır; okuma hatası
+      // /health durumunu değiştirmez (null ile raporlanır).
+      let rotation = case ok {
+        True -> db.rotation_window(conn)
+        False -> Error(Nil)
+      }
       wisp.response(case ok {
         True -> 200
         False -> 503
@@ -563,6 +863,19 @@ fn route(
               }),
             ),
             #("environment", json.string("development")),
+            #("secret_rotations", case rotation {
+              Ok(rows) ->
+                json.array(rows, fn(row) {
+                  let #(secret, state, age, window) = row
+                  json.object([
+                    #("secret", json.string(secret)),
+                    #("state", json.string(state)),
+                    #("age_hours", json.string(age)),
+                    #("window_hours", json.string(window)),
+                  ])
+                })
+              Error(_) -> json.null()
+            }),
           ]),
         ),
       )
@@ -1911,7 +2224,7 @@ fn admin(
                 10_485_760,
               ))
               case
-                field(form.values, "csrf") == csrf
+                secure_form_csrf(form.values, csrf)
                 && request.get_header(req, "origin") == Ok(origin)
               {
                 False -> wisp.response(403)

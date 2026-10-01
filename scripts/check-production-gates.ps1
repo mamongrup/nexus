@@ -25,6 +25,14 @@ if ($origin.Host -match '(^|\.)example\.(com|org|net)$') { throw 'APP_ORIGIN sti
 foreach ($key in @('SECRET_KEY_BASE','NEXUS_CONFIG_KEY')) {
   if (([string]$values[$key]).Length -lt 64) { throw "$key must contain at least 64 characters." }
 }
+# Rotasyon penceresi sirri opsiyoneldir; ancak set edildiyse mevcut sirrin
+# kopyasi olamaz ve ayni 64 karakter standardina uymak zorundadir.
+# (Pencere yasi/kapanma denetimi ayrica scripts/check-secret-hygiene.ps1'de.)
+$previousSecret = [string]$values['SECRET_KEY_BASE_PREVIOUS']
+if (![string]::IsNullOrWhiteSpace($previousSecret)) {
+  if ($previousSecret -eq [string]$values['SECRET_KEY_BASE']) { throw 'SECRET_KEY_BASE_PREVIOUS must differ from SECRET_KEY_BASE.' }
+  if ($previousSecret.Length -lt 64) { throw 'SECRET_KEY_BASE_PREVIOUS must contain at least 64 characters.' }
+}
 if ($values['PGUSER'] -eq $values['PGOWNER']) { throw 'Runtime and migration database users must differ.' }
 foreach ($key in @('PGPASSWORD','PGOWNER_PASSWORD')) {
   if ([string]$values[$key] -match 'CHANGE_ME|generated-by-setup|change-this|^dummy$') { throw "$key contains a placeholder." }

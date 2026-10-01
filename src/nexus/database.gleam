@@ -5,6 +5,7 @@ import gleam/int
 import gleam/list
 import gleam/option
 import gleam/result
+import gleam/string
 import nexus/domain.{type Draft, type Property, type Session, Property, Session}
 import pog
 
@@ -183,6 +184,50 @@ pub fn healthy(db: pog.Connection) -> Bool {
   case pog.query("select 1") |> pog.execute(db) {
     Ok(_) -> True
     Error(_) -> False
+  }
+}
+
+/// Rotasyon penceresi durumu: her sır için (secret, state, age_hours,
+/// window_hours) — SECRET_KEY_BASE ve NEXUS_CONFIG_KEY tek sorguda.
+/// Migration 187 fonksiyonlarindan okunur; format
+/// scripts/check-secret-hygiene.ps1'in kullandigi pipe bicimiyle aynidir.
+/// DB hatasi veya fonksiyon yoksa Error — /health servis durumunu
+/// etkilemeden raporlamayi "unavailable" yapar.
+pub fn rotation_window(
+  db: pog.Connection,
+) -> Result(List(#(String, String, String, String)), Nil) {
+  case
+    pog.query(
+      "select s.name || '|' || "
+      <> "events.rotation_window_state(s.name) || '|' || "
+      <> "coalesce(events.latest_rotation_age_hours(s.name)::text, '-') || '|' || "
+      <> "events.rotation_window_hours(s.name)::text "
+      <> "from (values ('SECRET_KEY_BASE'), ('NEXUS_CONFIG_KEY')) as s(name)",
+    )
+    |> pog.returning(decode.field(0, decode.string, decode.success))
+    |> pog.execute(db)
+  {
+    Ok(r) -> Ok(parse_window_rows(r.rows, []))
+    Error(_) -> Error(Nil)
+  }
+}
+
+fn parse_window_rows(
+  rows: List(String),
+  acc: List(#(String, String, String, String)),
+) -> List(#(String, String, String, String)) {
+  case rows {
+    [] -> list.reverse(acc)
+    [row, ..rest] -> {
+      let parsed = case string.split(row, "|") {
+        [secret, state, age, window] -> Ok(#(secret, state, age, window))
+        _ -> Error(Nil)
+      }
+      case parsed {
+        Ok(tuple) -> parse_window_rows(rest, [tuple, ..acc])
+        Error(_) -> parse_window_rows(rest, acc)
+      }
+    }
   }
 }
 
