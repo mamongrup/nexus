@@ -51,12 +51,22 @@ pub fn action(
   action: String,
   fields: List(#(String, String)),
 ) -> wisp.Response {
-  let listing = list.key_find(fields,"listing_id") |> result.unwrap("")
-  let feed = list.key_find(fields,"feed_id") |> result.unwrap("")
-  case calendar.command(db,s,"select inventory.calendar_target_scope(nullif($1,'')::uuid,nullif($2,'')::uuid)::text",[pog.text(listing),pog.text(feed)]) {
-    Error(_) -> error("İlan veya takvim erişimi reddedildi.",403)
+  let listing = list.key_find(fields, "listing_id") |> result.unwrap("")
+  let feed = list.key_find(fields, "feed_id") |> result.unwrap("")
+  case
+    calendar.command(
+      db,
+      s,
+      "select inventory.calendar_target_scope(nullif($1,'')::uuid,nullif($2,'')::uuid)::text",
+      [pog.text(listing), pog.text(feed)],
+    )
+  {
+    Error(_) -> error("İlan veya takvim erişimi reddedildi.", 403)
     Ok(tenant) -> {
-      let response = database.scope(db,s,fn(tx) { Ok(ffi_action(tx,tenant,s.user_id,action,fields)) })
+      let response =
+        database.scope(db, s, fn(tx) {
+          Ok(ffi_action(tx, tenant, s.user_id, action, fields))
+        })
       response |> result.unwrap(wisp.response(422))
     }
   }
