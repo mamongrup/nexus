@@ -4,6 +4,7 @@ Set-Location -LiteralPath $ProjectRoot
 & "$PSScriptRoot/config-key.ps1"
 & "$PSScriptRoot/ensure-supplier-expiry-worker.ps1"
 & "$PSScriptRoot/ensure-agency-booking-expiry-worker.ps1"
+& "$PSScriptRoot/ensure-auth-session-expiry-worker.ps1"
 try {
  $health=Invoke-RestMethod "$env:APP_ORIGIN/v1/health" -TimeoutSec 2
  if ($health.service -eq 'nexustraveltech' -and $health.database -eq 'ready') { Write-Output "NEXUS ve PostgreSQL hazır: $env:APP_ORIGIN/admin"; return }
