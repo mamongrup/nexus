@@ -44,7 +44,9 @@ function Write-Result([string]$name, [bool]$ok, [string]$detail) {
 # Start-Process'in -WindowSize/-WindowStyle secenekleri yalnizca Windows'ta
 # vardir; CI ubuntu + pwsh calistirdigi icin platform kosuluna gore
 # parametre listesini daraltiyoruz.
-$isWindows = $env:OS -eq 'Windows_NT'
+# Ad bilerek $onWindows: $IsWindows PowerShell'un salt-okunur otomatik
+# degiskenidir ve buyuk/kucuk harf duyarsiz eslesir.
+$onWindows = $env:OS -eq 'Windows_NT'
 function Start-Background {
   param([string]$FilePath, [string[]]$ArgumentList, [string]$StdOut, [string]$StdErr)
   $splat = @{
@@ -54,7 +56,7 @@ function Start-Background {
     RedirectStandardOutput = $StdOut
     RedirectStandardError  = $StdErr
   }
-  if ($isWindows) { $splat['WindowStyle'] = 'Hidden' }
+  if ($onWindows) { $splat['WindowStyle'] = 'Hidden' }
   return Start-Process @splat
 }
 
@@ -126,8 +128,8 @@ try {
       }
     }
     Set-Content -LiteralPath (Join-Path $sandbox '.env') -Value $rendered -Encoding ASCII
-    $shell = if ($isWindows) { 'powershell.exe' } else { 'pwsh' }
-    $shellArgs = if ($isWindows) {
+    $shell = if ($onWindows) { 'powershell.exe' } else { 'pwsh' }
+    $shellArgs = if ($onWindows) {
       @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File')
     } else {
       @('-NoProfile', '-File')
@@ -180,8 +182,8 @@ try {
   # 1) Saglikli purge: canli veritabaninda tek dongu, alarm yok.
   $before = Get-DeliveryCount
   $healthyLog = Join-Path $logDir 'healthy-worker.out.log'
-  $shell = if ($isWindows) { 'powershell.exe' } else { 'pwsh' }
-  $shellArgs = if ($isWindows) {
+  $shell = if ($onWindows) { 'powershell.exe' } else { 'pwsh' }
+  $shellArgs = if ($onWindows) {
     @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File')
   } else {
     @('-NoProfile', '-File')
