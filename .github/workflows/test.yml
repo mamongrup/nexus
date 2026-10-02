@@ -50,7 +50,10 @@ jobs:
           # Servis parolası: POSTGRES_PASSWORD ile aynı (rol/DB kurulumu).
           PGPASSWORD: postgres
         run: |
-          psql -h 127.0.0.1 -U postgres -d postgres -v ON_ERROR_STOP=1 -c "CREATE ROLE nexus_owner LOGIN PASSWORD 'ci-nexus-owner';"
+          # CREATEDB: scratch-tabanli simler (fresh-db-smoke, yanlis-DB guard
+          # reddetme testi) owner'in gecici veritabani yaratmasini ister;
+          # yerel kurulum ayni yetkiyle calisir.
+          psql -h 127.0.0.1 -U postgres -d postgres -v ON_ERROR_STOP=1 -c "CREATE ROLE nexus_owner LOGIN PASSWORD 'ci-nexus-owner' CREATEDB;"
           psql -h 127.0.0.1 -U postgres -d postgres -v ON_ERROR_STOP=1 -c "CREATE ROLE nexus_app LOGIN PASSWORD 'ci-nexus-app';"
           psql -h 127.0.0.1 -U postgres -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE nexustraveltech OWNER nexus_owner;"
           # db/tests isolation testleri SET ROLE nexus_app ile uygulama
