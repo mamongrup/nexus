@@ -100,4 +100,17 @@ jobs:
           PGOWNER_PASSWORD: ci-nexus-owner
         run: ./scripts/test-wrong-db-guard.ps1
 
+      # Worker alarm katmani: gercek worker kosumu, yerel webhook alicisi ve
+      # gecersiz-veritabani sandbox'i ile arıza / cooldown / tirmeme /
+      # kanalsiz / saglikli (false-alarm yok) senaryolari.
+      - name: Auth session expiry worker alert test
+        shell: pwsh
+        env:
+          PGHOST: 127.0.0.1
+          PGPORT: "5432"
+          PGDATABASE: nexustraveltech
+          PGOWNER: nexus_owner
+          PGOWNER_PASSWORD: ci-nexus-owner
+        run: ./scripts/test-auth-session-expiry-alerts.ps1
+
       - run: gleam format --check src test
