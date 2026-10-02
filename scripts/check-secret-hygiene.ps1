@@ -1,5 +1,7 @@
 param(
-  [string]$EnvPath = ".env"
+  [string]$EnvPath = ".env",
+  [int]$SecretKeyRotationMaxDays = 180,
+  [switch]$WarnOnly
 )
 
 # Sır hijyeni + rotasyon penceresi denetimi (platform tarafı).
@@ -14,6 +16,10 @@ param(
 #   4. Rotasyon penceresi: events.rotation_window_state('SECRET_KEY_BASE')
 #      'expired' ise SECRET_KEY_BASE_PREVIOUS hala env'deyse basarisiz
 #      (pencere kapandi; onceki sır kaldirilmali). 'open' ise bilgi mesaji.
+#   5. Rotasyon yasi: son SECRET_KEY_BASE kaydi -SecretKeyRotationMaxDays
+#      (varsayilan 180 gun) uzerindeyse basarisiz; -WarnOnly ile uyari.
+#      Acente'deki 238 sozlesmesinin (check-secret-hygiene.ps1 -SecretKey-
+#      RotationMaxDays) platform muadili; yas events.latest_rotation_age_hours.
 
 $ErrorActionPreference = "Stop"
 
@@ -119,6 +125,19 @@ SELECT events.rotation_window_state('SECRET_KEY_BASE') || '|' ||
       Write-Host "[FAIL] Beklenmeyen pencere durumu: $windowState"
       Add-Fail
     }
+  }
+
+  # --- 5. Rotasyon yasi kapisi (acente 238 muadili) ---------------------------
+  $ageDays = $null
+  if ($ageHours -ne '-') { $ageDays = [math]::Round(([double]$ageHours) / 24.0, 2) }
+  $rotationStatus = 'unknown'
+  if ($null -ne $ageDays) {
+    $rotationStatus = if ($ageDays -gt $SecretKeyRotationMaxDays) { 'overdue' } else { 'ok' }
+  }
+  Write-Host "secret_key_rotation_status=$rotationStatus days=$ageDays max_days=$SecretKeyRotationMaxDays"
+  if ($rotationStatus -eq 'overdue') {
+    $msg = "secret_key_rotation overdue: $ageDays gun (en fazla $SecretKeyRotationMaxDays) -- rotasyon yapin (acente muadili sozlesme: 238)"
+    if ($WarnOnly) { Write-Warning $msg } else { Write-Host "[FAIL] $msg"; Add-Fail }
   }
 } finally {
   Remove-Item Env:PGPASSWORD -ErrorAction SilentlyContinue
