@@ -128,10 +128,23 @@ function Send-Alert([string]$subject, [string]$body) {
 }
 
 $nameEscaped = $SecretName -replace "'", "''"
+# Karar tablosu DB'de yasar (events.rotation_check_decision, migration 192):
+# yas kapisi, pencere durumu ve PREVIOUS varligi tek yerde degerlendirilir.
+# Betik yalnizca metin uretir; test/rotation_overdue_decisions.sql ayni
+# fonksiyonu dort senaryoda dogrular, yani test betigin kopyasi degil
+# betigin kullandigi kaynagi test eder.
+$prevPresent = $values.ContainsKey('SECRET_KEY_BASE_PREVIOUS') -and -not [string]::IsNullOrWhiteSpace([string]$values['SECRET_KEY_BASE_PREVIOUS'])
+$prevSql = if ($prevPresent) { 'true' } else { 'false' }
 $sql = @"
 SELECT events.rotation_window_state('$nameEscaped') || '|' ||
        COALESCE(events.latest_rotation_age_hours('$nameEscaped')::text, '-') || '|' ||
-       events.rotation_window_hours('$nameEscaped')::text;
+       events.rotation_window_hours('$nameEscaped')::text || '|' ||
+       d.exit_code || '|' || d.severity || '|' || d.alert_kind
+FROM events.rotation_check_decision(
+       events.rotation_window_state('$nameEscaped'),
+       events.latest_rotation_age_hours('$nameEscaped'),
+       $SecretKeyRotationMaxDays,
+       $prevSql) AS d;
 "@
 
 $state = $null
@@ -154,15 +167,16 @@ $parts = "$state" -split '\|'
 $windowState = $parts[0]
 $ageHours = $parts[1]
 $windowHours = $parts[2]
+$exitCode = $parts[3]
+$severity = $parts[4]
+$alertKind = $parts[5]
 $host_ = $env:COMPUTERNAME
 $ageDays = $null
 if ($ageHours -ne '-') { $ageDays = [math]::Round(([double]$ageHours) / 24.0, 2) }
-$ageOverdue = ($null -ne $ageDays) -and ($ageDays -gt $SecretKeyRotationMaxDays)
-$prevPresent = $values.ContainsKey('SECRET_KEY_BASE_PREVIOUS') -and -not [string]::IsNullOrWhiteSpace([string]$values['SECRET_KEY_BASE_PREVIOUS'])
 
 # Rotasyon yasi kapisi (acente 238 muadili): son rotasyon kabul araligini
 # astiysa kok-neden uyarisi uretilir; pencere durumundan bagimsizdir.
-if ($ageOverdue) {
+if ($alertKind -eq 'overdue') {
   $subject = "[NEXUS] SIR ROTASYONU GECIKTI: $SecretName yasi $ageDays gun (sinir $SecretKeyRotationMaxDays) ($host_)"
   $prevLine = ''
   if ($prevPresent) {
@@ -182,17 +196,13 @@ Kontrol    : scripts/check-secret-hygiene.ps1
 "@
   $via = Send-Alert -subject $subject -body $body
   Write-CheckLog "[ALERT] Rotasyon overdue (yas $ageDays gun > $SecretKeyRotationMaxDays). Uyari: $via"
-  exit 1
+  exit $exitCode
 }
 
-switch ($windowState) {
-  'open' {
-    Write-CheckLog "[OK] $SecretName penceresi acik (yas=${ageHours}h / pencere=${windowHours}h)."
-    exit 0
-  }
-  'expired' {
-    if ($prevPresent) {
-      $subject = "[NEXUS] SIR ROTASYONU GECIKTI: $SecretName penceresi doldu ($host_)"
+# Geri kalan kararlar alert_kind uzerinden yonlendirilir; 'ok' ve 'error'
+# turleri icin betik yalnizca loglar.
+if ($alertKind -eq 'window_expired_previous_present') {
+  $subject = "[NEXUS] SIR ROTASYONU GECIKTI: $SecretName penceresi doldu ($host_)"
       $body = @"
 SECRET_KEY_BASE rotasyon penceresi doldu.
 Bilgisayar : $host_
@@ -206,12 +216,10 @@ Kontrol    : scripts/check-secret-hygiene.ps1
 "@
       $via = Send-Alert -subject $subject -body $body
       Write-CheckLog "[ALERT] Pencere doldu (yas=${ageHours}h > ${windowHours}h). Uyari: $via"
-      exit 1
-    }
-    Write-CheckLog "[OK] Pencere doldu (${ageHours}h > ${windowHours}h) ve SECRET_KEY_BASE_PREVIOUS kaldirilmis; yas $ageDays gun (sinir $SecretKeyRotationMaxDays). Saglikli durum, uyari yok."
-    exit 0
-  }
-  'unknown' {
+      exit $exitCode
+}
+
+if ($alertKind -eq 'no_record') {
     $subject = "[NEXUS] SIR ROTASYONU KAYDI YOK: $SecretName denetlenemiyor ($host_)"
     $body = @"
 SECRET_KEY_BASE icin rotasyon kaydi bulunamadi (fail-closed).
@@ -224,10 +232,17 @@ Kontrol    : scripts/check-secret-hygiene.ps1
 "@
     $via = Send-Alert -subject $subject -body $body
     Write-CheckLog "[ALERT] Rotasyon kaydi yok (fail-closed). Uyari: $via"
-    exit 1
-  }
-  default {
-    Write-CheckLog "[ERROR] Beklenmeyen pencere durumu: $windowState"
-    exit 2
-  }
+    exit $exitCode
 }
+
+if ($alertKind -eq 'none') {
+  if ($windowState -eq 'open') {
+    Write-CheckLog "[OK] $SecretName penceresi acik (yas=${ageHours}h / pencere=${windowHours}h)."
+  } else {
+    Write-CheckLog "[OK] Pencere doldu (${ageHours}h > ${windowHours}h) ve SECRET_KEY_BASE_PREVIOUS kaldirilmis; yas $ageDays gun (sinir $SecretKeyRotationMaxDays). Saglikli durum, uyari yok."
+  }
+  exit $exitCode
+}
+
+Write-CheckLog "[ERROR] Beklenmeyen pencere durumu: $windowState (karar=$alertKind)"
+exit 2
