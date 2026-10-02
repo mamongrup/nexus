@@ -6,8 +6,11 @@
   events.rotation_window_state('SECRET_KEY_BASE') durumunu okur (migration 187
   sozlesmesi; check-secret-hygiene.ps1 ile ayni kaynak):
     - open    -> bilgilendirme, cikis 0.
-    - expired -> SECRET_KEY_BASE_PREVIOUS pencereyi doldurdu; webhook/e-posta
-                 ile uyarilir, cikis 1.
+    - expired -> SECRET_KEY_BASE_PREVIOUS hala env'deyse uyarilir (cikis 1);
+                 kaldirilmissa saglikli durumdur, cikis 0. Ayrica rotasyon
+                 yasi -SecretKeyRotationMaxDays (varsayilan 180 gun; acente
+                 238 muadili sozlesme) ustundeyse rotasyon overdue uyarisi,
+                 cikis 1.
     - unknown -> rotasyon kaydi yok (fail-closed); uyarilir, cikis 1.
   DB'ye ulasilamazsa uyarilamaz; konsol + log, cikis 2.
 
@@ -33,7 +36,10 @@ param(
   [string]$MailUser = '',
   [string]$MailPassword = '',
   [string]$EnvPath = '.env',
-  [string]$SecretName = 'SECRET_KEY_BASE'
+  [string]$SecretName = 'SECRET_KEY_BASE',
+  # Son rotasyon icin kabul edilebilir en yuksek yas (gun); asimda rotasyon
+  # overdue uyarisi uretilir (acente'deki 238 sozlesmesinin platform muadili).
+  [int]$SecretKeyRotationMaxDays = 180
 )
 
 $ErrorActionPreference = 'Stop'
@@ -149,6 +155,35 @@ $windowState = $parts[0]
 $ageHours = $parts[1]
 $windowHours = $parts[2]
 $host_ = $env:COMPUTERNAME
+$ageDays = $null
+if ($ageHours -ne '-') { $ageDays = [math]::Round(([double]$ageHours) / 24.0, 2) }
+$ageOverdue = ($null -ne $ageDays) -and ($ageDays -gt $SecretKeyRotationMaxDays)
+$prevPresent = $values.ContainsKey('SECRET_KEY_BASE_PREVIOUS') -and -not [string]::IsNullOrWhiteSpace([string]$values['SECRET_KEY_BASE_PREVIOUS'])
+
+# Rotasyon yasi kapisi (acente 238 muadili): son rotasyon kabul araligini
+# astiysa kok-neden uyarisi uretilir; pencere durumundan bagimsizdir.
+if ($ageOverdue) {
+  $subject = "[NEXUS] SIR ROTASYONU GECIKTI: $SecretName yasi $ageDays gun (sinir $SecretKeyRotationMaxDays) ($host_)"
+  $prevLine = ''
+  if ($prevPresent) {
+    $prevLine = "Ek sorun   : SECRET_KEY_BASE_PREVIOUS hala .env'de; kaldirin."
+  }
+  $body = @"
+SECRET_KEY_BASE son rotasyon yasi kabul araligini asti (acente 238 muadili sozlesme).
+Bilgisayar : $host_
+Secret     : $SecretName
+Durum      : rotasyon overdue
+Yas        : $ageDays gun (en fazla $SecretKeyRotationMaxDays gun)
+$prevLine
+Eylem      : Yeni sir uretip rotasyonu kaydedin
+             (scripts/record-secret-rotation.ps1 -Name $SecretName -Source planned).
+             Detay: docs/security-2026-10-01.md
+Kontrol    : scripts/check-secret-hygiene.ps1
+"@
+  $via = Send-Alert -subject $subject -body $body
+  Write-CheckLog "[ALERT] Rotasyon overdue (yas $ageDays gun > $SecretKeyRotationMaxDays). Uyari: $via"
+  exit 1
+}
 
 switch ($windowState) {
   'open' {
@@ -156,8 +191,9 @@ switch ($windowState) {
     exit 0
   }
   'expired' {
-    $subject = "[NEXUS] SIR ROTASYONU GECIKTI: $SecretName penceresi doldu ($host_)"
-    $body = @"
+    if ($prevPresent) {
+      $subject = "[NEXUS] SIR ROTASYONU GECIKTI: $SecretName penceresi doldu ($host_)"
+      $body = @"
 SECRET_KEY_BASE rotasyon penceresi doldu.
 Bilgisayar : $host_
 Sır        : $SecretName
@@ -168,9 +204,12 @@ Eylem      : SECRET_KEY_BASE_PREVIOUS degerini .env dosyasindan kaldirin ve
              uygulamayi yeniden baslatin. Detay: docs/security-2026-10-01.md
 Kontrol    : scripts/check-secret-hygiene.ps1
 "@
-    $via = Send-Alert -subject $subject -body $body
-    Write-CheckLog "[ALERT] Pencere doldu (yas=${ageHours}h > ${windowHours}h). Uyari: $via"
-    exit 1
+      $via = Send-Alert -subject $subject -body $body
+      Write-CheckLog "[ALERT] Pencere doldu (yas=${ageHours}h > ${windowHours}h). Uyari: $via"
+      exit 1
+    }
+    Write-CheckLog "[OK] Pencere doldu (${ageHours}h > ${windowHours}h) ve SECRET_KEY_BASE_PREVIOUS kaldirilmis; yas $ageDays gun (sinir $SecretKeyRotationMaxDays). Saglikli durum, uyari yok."
+    exit 0
   }
   'unknown' {
     $subject = "[NEXUS] SIR ROTASYONU KAYDI YOK: $SecretName denetlenemiyor ($host_)"
