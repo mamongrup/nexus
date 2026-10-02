@@ -83,4 +83,18 @@ jobs:
           PGOWNER_PASSWORD: ci-nexus-owner
         run: ./scripts/run-db-tests.ps1
 
+      # Yanlis-DB guard reddetme testi: scratch DB'de 'agency' semasi ile
+      # migrate.ps1'in acente bicimli hedefi, DDL uygulamadan reddetmesi
+      # gerekir (scripts/test-wrong-db-guard.ps1). Scratch DB owner
+      # kimlikleriyle yaratilip temizlenir.
+      - name: Wrong-database guard rejection test
+        shell: pwsh
+        env:
+          PGHOST: 127.0.0.1
+          PGPORT: "5432"
+          PGDATABASE: nexustraveltech
+          PGOWNER: nexus_owner
+          PGOWNER_PASSWORD: ci-nexus-owner
+        run: ./scripts/test-wrong-db-guard.ps1
+
       - run: gleam format --check src test
