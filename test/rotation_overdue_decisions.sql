@@ -175,8 +175,92 @@ PERFORM pg_temp.assert_rotation_decision(
   0, 'none',
   'sinir tanimsiz: yas kapisi atlanir, pencere karari gecerli');
 
+  -- -------------------------------------------------------------------
+  -- 180 GUN ESIGI: 179 / 180 / 181 GUN, GERCEK KAYITLarla
+  -- Yukaridaki boundary testleri parametre olarak gun sayisi YAZAR;
+  -- burada ise rotasyon kaydinin rotated_at'i gercekten eskitilir ve
+  -- yas migration 187'den (latest_rotation_age_hours) HESAPLANIR.
+  -- Boylece iki sey birden sinanir:
+  --   (a) kenar yuvarlamasi - yas 2 ondaliga yuvarlanir, gun=180
+  --       tam gun olmadigi icin "> 180" kuralinin hicbir yerde kaymamasi,
+  --   (b) pencere kapisi ile yas kapisinin birbirine girmemesi.
+  -- 179 ve 180 gun: overdue DEGIL. 181 gun: overdue.
+  -- -------------------------------------------------------------------
+  DECLARE
+    v_days int;
+    v_state text;
+    v_age numeric;
+    v_exit int;
+    v_kind text;
+  BEGIN
+    FOR v_days IN 179..181 LOOP
+      -- Kayit yalnizca bu transaction icinde; ROLLBACK ile yok olur.
+      DELETE FROM events.secret_rotations WHERE secret_name = 'THRESHOLD_SECRET';
+      INSERT INTO events.secret_rotations(secret_name, source)
+      VALUES ('THRESHOLD_SECRET', 'test');
+      -- Pencereyi 1 saate indir: 179+ gun eski kayit 'expired' olur, boylece
+      -- yas kapisi ile pencere kapisi ayni anda tetiklenir ve hangisinin
+      -- oncelikli oldugu gorulur.
+      PERFORM events.set_rotation_window('THRESHOLD_SECRET', 1);
+      UPDATE events.secret_rotations
+         SET rotated_at = now() - make_interval(days => v_days)
+       WHERE secret_name = 'THRESHOLD_SECRET';
+
+      v_state := events.rotation_window_state('THRESHOLD_SECRET');
+      v_age := events.latest_rotation_age_hours('THRESHOLD_SECRET');
+      SELECT d.exit_code, d.alert_kind INTO v_exit, v_kind
+      FROM events.rotation_check_decision(v_state, v_age, 180, true) AS d;
+
+      IF v_days < 181 THEN
+        -- 179 ve 180 gun: yas kapisi TETIKLENMEZ, expired+previous uyarir.
+        IF v_kind <> 'window_expired_previous_present' OR v_exit <> 1 THEN
+          RAISE EXCEPTION '% gun: overdue beklenmiyordu ama exit=% kind=%',
+            v_days, v_exit, v_kind;
+        END IF;
+        IF v_state <> 'expired' THEN
+          RAISE EXCEPTION '% gun: pencere expired olmaliydi ama %', v_days, v_state;
+        END IF;
+      ELSE
+        -- 181 gun: yas kapisi once degerlendirilir, overdue kazanir.
+        IF v_kind <> 'overdue' OR v_exit <> 1 THEN
+          RAISE EXCEPTION '% gun: overdue bekleniyordu ama exit=% kind=%',
+            v_days, v_exit, v_kind;
+        END IF;
+      END IF;
+
+      RAISE NOTICE '  [% gun] yas=% gun state=% -> exit=% kind=%  <- %',
+        v_days, round(v_age / 24.0, 2), v_state, v_exit, v_kind,
+        CASE WHEN v_days < 181
+             THEN 'esik/alti: overdue degil, expired+previous uyarisi'
+             ELSE 'esik ustu: overdue, pencere durumunu gölgeler' END;
+    END LOOP;
+
+    DELETE FROM events.secret_rotation_settings WHERE secret_name = 'THRESHOLD_SECRET';
+    DELETE FROM events.secret_rotations WHERE secret_name = 'THRESHOLD_SECRET';
+
+    -- Yuvarlama toleransi (kasten sabitlenir): karar fonksiyonu yasi
+    -- 2 ondaliga YUVARLAR, bu yuzden esigin hemen ustundeki kucuk bir
+    -- asim 180.00'a yuvarlanip overdue URETMEZ. ~36 saniyelik bir
+    -- toleranstir ve guvenli yondedir (erken uyari yerine gec uyari).
+    -- Beklenmedik bir yuvarlama degisikligi bu test kirilir.
+    SELECT d.alert_kind INTO v_kind
+    FROM events.rotation_check_decision('open', 180 * 24 + 0.01, 180, false) AS d;
+    IF v_kind <> 'none' THEN
+      RAISE EXCEPTION 'esigin 36 saniye ustu yuvarlamasi overdue uretmemeli, kind=%', v_kind;
+    END IF;
+    RAISE NOTICE '  [180 gun + 36sn] yuvarlamaya duser (180.00) -> kind=none  <- tolerans kasitlidir';
+
+    -- Asil asim (1 saat) ise overdue olur: yuvarlama bunu yakalayamaz.
+    SELECT d.alert_kind INTO v_kind
+    FROM events.rotation_check_decision('open', 180 * 24 + 1, 180, false) AS d;
+    IF v_kind <> 'overdue' THEN
+      RAISE EXCEPTION 'esigin 1 saat ustu overdue olmali, kind=%', v_kind;
+    END IF;
+    RAISE NOTICE '  [180 gun + 1 saat] -> kind=overdue  <- gercek asim yakalandi';
+  END;
+
   RAISE NOTICE '';
-  RAISE NOTICE 'PASS: notify-rotation-overdue karar tablosu (open/overdue/unknown/expired+previous + 6 sinir durumu)';
+  RAISE NOTICE 'PASS: notify-rotation-overdue karar tablosu (open/overdue/unknown/expired+previous + 6 sinir durumu + 179/180/181 gun esik taramasi)';
 END;
 $$;
 
