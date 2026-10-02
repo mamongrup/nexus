@@ -1,4 +1,7 @@
+param([string]$Database = '')
 . "$PSScriptRoot/env.ps1"
+# Optional explicit target (fresh-db-smoke.ps1). Empty = .env default.
+if ($Database) { $env:PGDATABASE = $Database }
 $Psql = (Get-Command psql -ErrorAction Stop).Source
 New-Item -ItemType Directory -Path (Join-Path $ProjectRoot '.local') -Force | Out-Null
 # Checksum is taken over the normalised text, never over raw file bytes.
