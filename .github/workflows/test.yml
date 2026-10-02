@@ -11,11 +11,12 @@ jobs:
   test:
     runs-on: ubuntu-latest
 
-    # Platformun tam kapısı (scripts/test.ps1) Windows'a özgü parçalarla
-    # çalışır; bu iş aynı diziyi Linux'ta eşler: rol/DB hazırlığı →
+    # Platformun tam kapısını (scripts/test.ps1) eşler: rol/DB hazırlığı →
     # migration'lar → gleam test (REQUIRE_TEST_DB=true: DB bağımlı testler
-    # gürültülü; DB yoksa sessiz [SKIP] YASAK) → SQL kabul katmanı
-    # (test/*.sql; db/tests/*.sql zinciri Windows kapısında kalır).
+    # gürültülü; DB yoksa sessiz [SKIP] YASAK) → SQL test zinciri.
+    # Zincir (db/tests/*.sql fixture sırası + test/*.sql kabul katmanı)
+    # scripts/run-db-tests.ps1'de tek kaynaktadır; Windows kapısı ile CI aynı
+    # betiği çağırır, sıra hiçbir yere kopyalanmaz.
     services:
       postgres:
         image: postgres:18
@@ -72,43 +73,14 @@ jobs:
           REQUIRE_TEST_DB: "true"
         run: gleam test
 
-      - name: SQL acceptance tests
-        shell: bash
+      - name: SQL test chain (db/tests + test/*.sql)
+        shell: pwsh
         env:
-          PGPASSWORD: ci-nexus-owner
-        run: |
-          # Faz 1: sirali zincir — fixture'lari kurar. Sirayi scripts/test.ps1
-          # ile ayni tut (Windows kapisiyla senkron).
-          for f in db/tests/isolation.sql \
-            db/tests/reservation_lifecycle.sql \
-            db/tests/settings_isolation.sql \
-            db/tests/cms.sql \
-            db/tests/ai_scope.sql \
-            db/tests/ai_governance_and_finance.sql \
-            db/tests/external_operation_truth.sql \
-            db/tests/external_operation_existing_listing.sql \
-            db/tests/frozen_quote_ledger.sql \
-            db/tests/operational_provider_truth.sql \
-            db/tests/external_operation_queue.sql \
-            db/tests/external_operation_worker.sql \
-            db/tests/external_operation_retry.sql \
-            db/tests/marketplace_feed_v2.sql \
-            db/tests/cny_currency.sql \
-            db/tests/listing_module_scope.sql \
-            db/tests/listing_review.sql \
-            db/tests/supplier_application.sql \
-            db/tests/sector_benchmarking.sql \
-            db/tests/elite_hospitality_suite.sql \
-            db/tests/category_values.sql; do
-            echo "::group::$f"
-            psql -X -w -h 127.0.0.1 -p 5432 -U nexus_owner -d nexustraveltech -v ON_ERROR_STOP=1 -f "$f" || exit 1
-            echo "::endgroup::"
-          done
-          # Faz 2: test/*.sql kabul katmani (zincir fixture'larina dayanir).
-          for f in test/*.sql; do
-            echo "::group::$f"
-            psql -X -w -h 127.0.0.1 -p 5432 -U nexus_owner -d nexustraveltech -v ON_ERROR_STOP=1 -f "$f" || exit 1
-            echo "::endgroup::"
-          done
+          PGHOST: 127.0.0.1
+          PGPORT: "5432"
+          PGDATABASE: nexustraveltech
+          PGOWNER: nexus_owner
+          PGOWNER_PASSWORD: ci-nexus-owner
+        run: ./scripts/run-db-tests.ps1
 
       - run: gleam format --check src test
