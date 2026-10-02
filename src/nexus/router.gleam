@@ -24,6 +24,7 @@ import nexus/calendar_view
 import nexus/campaigns_view
 import nexus/category_admin
 import nexus/checkin_view
+import nexus/commerce_operations
 import nexus/commercial_engine
 import nexus/connection_requests_view
 import nexus/contact_inbox
@@ -424,6 +425,47 @@ fn rate_limited(key: String, limit: Int, window_ms: Float) -> Bool {
       False
     }
   }
+}
+
+/// Feed throttling window, with the `retry-after` it advertises.
+///
+/// The two live side by side on purpose: a poller that is told to retry in 5
+/// seconds while its bucket actually refills in 60 just walks back into the
+/// same 429. Declaring them as a pair makes that drift impossible to write.
+const feed_window_ms: Float = 60_000.0
+
+const feed_retry_after_seconds: Int = 60
+
+/// 429 for a throttled machine consumer.
+fn too_many_requests(message: String) -> wisp.Response {
+  wisp.response(429)
+  |> wisp.set_header("retry-after", int.to_string(feed_retry_after_seconds))
+  |> wisp.set_header("cache-control", "no-store")
+  |> wisp.json_body("{\"ok\":false,\"error\":\"" <> message <> "\"}")
+}
+
+/// Per agency **and** per network identity ceiling for the integration feeds.
+///
+/// The key is scoped to the authorised `agency_id`, not just the socket, so a
+/// shared hosting egress does not let one agency's burst throttle another,
+/// while a leaked `NEXUS_API_KEY` still cannot pull the whole catalogue as
+/// fast as the network allows. Only applied after authorisation succeeds: a
+/// rejected key is already recorded and denied by `agency_request_key_ok`,
+/// and counting it here as well would let an attacker inflate an agency's own
+/// bucket with requests that never reach the feed.
+fn feed_rate_limited(
+  req: wisp.Request,
+  peer: String,
+  feed: String,
+  agency_id: String,
+  limit: Int,
+  window_ms: Float,
+) -> Bool {
+  rate_limited(
+    "feed:" <> feed <> ":" <> agency_id <> ":" <> request_client_id(req, peer),
+    limit,
+    window_ms,
+  )
 }
 
 fn fail() {
@@ -944,6 +986,8 @@ fn route(
     http.Get, ["v1", "contract", "state"] -> api_contract_state(req, conn)
     http.Get, ["api", "v1", "contract", "filters"] -> api_contract_filters(conn)
     http.Get, ["v1", "contract", "filters"] -> api_contract_filters(conn)
+    http.Get, ["api", "public", "calendar", token] ->
+      commerce_operations.export(conn, token)
     http.Get, ["api", "v1", "feed", "inventory"] ->
       api_feed_inventory(req, conn, peer)
     http.Get, ["v1", "feed", "inventory"] -> api_feed_inventory(req, conn, peer)
@@ -1207,160 +1251,173 @@ fn api_feed_listings(
         "{\"ok\":false,\"error\":\"Geçersiz yetkilendirme anahtarı\"}",
       )
     True -> {
-      let category = field(query, "category")
-      let locality = field(query, "locality")
-      let q = field(query, "q")
-
-      let listing_decoder = {
-        use id <- decode.field(0, decode.string)
-        use title <- decode.field(1, decode.string)
-        use loc <- decode.field(2, decode.string)
-        use region <- decode.field(3, decode.string)
-        use cat <- decode.field(4, decode.string)
-        use cap <- decode.field(5, decode.string)
-        use prc <- decode.field(6, decode.string)
-        use curr <- decode.field(7, decode.string)
-        use desc <- decode.field(8, decode.string)
-        use short_desc <- decode.field(9, decode.string)
-        use imgs <- decode.field(10, decode.string)
-        use contract_fields <- decode.field(11, decode.string)
-        use price_unit <- decode.field(12, decode.string)
-        use availability_mode <- decode.field(13, decode.string)
-        use contact_policy <- decode.field(14, decode.string)
-        use cancellation_policy <- decode.field(15, decode.string)
-        decode.success(#(
-          id,
-          title,
-          loc,
-          region,
-          cat,
-          cap,
-          prc,
-          curr,
-          desc,
-          short_desc,
-          imgs,
-          contract_fields,
-          price_unit,
-          availability_mode,
-          contact_policy,
-          cancellation_policy,
-        ))
-      }
-
-      case agency_id == "" {
-        True ->
-          wisp.response(400)
-          |> wisp.json_body(
-            "{\"ok\":false,\"error\":\"agency_id parametresi gereklidir\"}",
-          )
+      case
+        feed_rate_limited(req, peer, "listings", agency_id, 60, feed_window_ms)
+      {
+        True -> too_many_requests("İlan feedi istek sınırı aşıldı")
         False -> {
-          // Feed hem onaylı acente politikasına hem de aktif tedarikçi-acente
-          // bağlantısına bağlıdır. Boş sonuç hiçbir zaman genel kataloğa düşmez.
-          let rows_res =
-            pog.query("select * from catalog.agency_listing_feed($1,$2,$3,$4)")
-            |> pog.parameter(pog.text(agency_id))
-            |> pog.parameter(pog.text(category))
-            |> pog.parameter(pog.text(locality))
-            |> pog.parameter(pog.text(q))
-            |> pog.returning(listing_decoder)
-            |> pog.execute(conn)
-            |> result.map(fn(r) { r.rows })
+          let category = field(query, "category")
+          let locality = field(query, "locality")
+          let q = field(query, "q")
 
-          case rows_res {
-            Ok(rows) -> {
-              let listings_json =
-                "["
-                <> {
-                  rows
-                  |> list.map(fn(row) {
-                    let #(
-                      id,
-                      title,
-                      loc,
-                      region,
-                      cat,
-                      cap,
-                      prc,
-                      curr,
-                      desc,
-                      short_desc,
-                      imgs,
-                      contract_fields,
-                      price_unit,
-                      availability_mode,
-                      contact_policy,
-                      cancellation_policy,
-                    ) = row
-                    let clean_imgs = case string.trim(imgs) {
-                      "" -> "[]"
-                      other -> other
-                    }
-                    let clean_contract_fields = case
-                      string.trim(contract_fields)
-                    {
-                      "" -> "{}"
-                      other -> other
-                    }
-                    "{\"id\":"
-                    <> { json.string(id) |> json.to_string }
-                    <> ",\"title\":"
-                    <> { json.string(title) |> json.to_string }
-                    <> ",\"locality\":"
-                    <> { json.string(loc) |> json.to_string }
-                    <> ",\"region\":"
-                    <> { json.string(region) |> json.to_string }
-                    <> ",\"category\":"
-                    <> { json.string(cat) |> json.to_string }
-                    <> ",\"capacity\":"
-                    <> { json.string(cap) |> json.to_string }
-                    <> ",\"price\":"
-                    <> { json.string(prc) |> json.to_string }
-                    <> ",\"currency\":"
-                    <> { json.string(curr) |> json.to_string }
-                    <> ",\"description\":"
-                    <> { json.string(desc) |> json.to_string }
-                    <> ",\"shortDescription\":"
-                    <> { json.string(short_desc) |> json.to_string }
-                    <> ",\"images\":"
-                    <> clean_imgs
-                    <> ",\"images_json\":"
-                    <> { json.string(clean_imgs) |> json.to_string }
-                    <> ",\"contractFields\":"
-                    <> clean_contract_fields
-                    <> ",\"contractFieldsJson\":"
-                    <> { json.string(clean_contract_fields) |> json.to_string }
-                    <> ",\"priceUnit\":"
-                    <> { json.string(price_unit) |> json.to_string }
-                    <> ",\"availabilityMode\":"
-                    <> { json.string(availability_mode) |> json.to_string }
-                    <> ",\"contactPolicy\":"
-                    <> { json.string(contact_policy) |> json.to_string }
-                    <> ",\"cancellationPolicy\":"
-                    <> { json.string(cancellation_policy) |> json.to_string }
-                    <> "}"
-                  })
-                  |> string.join(",")
-                }
-                <> "]"
+          let listing_decoder = {
+            use id <- decode.field(0, decode.string)
+            use title <- decode.field(1, decode.string)
+            use loc <- decode.field(2, decode.string)
+            use region <- decode.field(3, decode.string)
+            use cat <- decode.field(4, decode.string)
+            use cap <- decode.field(5, decode.string)
+            use prc <- decode.field(6, decode.string)
+            use curr <- decode.field(7, decode.string)
+            use desc <- decode.field(8, decode.string)
+            use short_desc <- decode.field(9, decode.string)
+            use imgs <- decode.field(10, decode.string)
+            use contract_fields <- decode.field(11, decode.string)
+            use price_unit <- decode.field(12, decode.string)
+            use availability_mode <- decode.field(13, decode.string)
+            use contact_policy <- decode.field(14, decode.string)
+            use cancellation_policy <- decode.field(15, decode.string)
+            decode.success(#(
+              id,
+              title,
+              loc,
+              region,
+              cat,
+              cap,
+              prc,
+              curr,
+              desc,
+              short_desc,
+              imgs,
+              contract_fields,
+              price_unit,
+              availability_mode,
+              contact_policy,
+              cancellation_policy,
+            ))
+          }
 
-              let response_body =
-                "{\"ok\":true,"
-                <> contract.version_field()
-                <> ",\"count\":"
-                <> int.to_string(list.length(rows))
-                <> ",\"listings\":"
-                <> listings_json
-                <> "}"
-
-              wisp.ok()
-              |> wisp.json_body(response_body)
-            }
-            Error(_) ->
-              wisp.response(500)
+          case agency_id == "" {
+            True ->
+              wisp.response(400)
               |> wisp.json_body(
-                "{\"ok\":false,\"error\":\"İlanlar okunamadı\"}",
+                "{\"ok\":false,\"error\":\"agency_id parametresi gereklidir\"}",
               )
+            False -> {
+              // Feed hem onaylı acente politikasına hem de aktif tedarikçi-acente
+              // bağlantısına bağlıdır. Boş sonuç hiçbir zaman genel kataloğa düşmez.
+              let rows_res =
+                pog.query(
+                  "select * from catalog.agency_listing_feed($1,$2,$3,$4)",
+                )
+                |> pog.parameter(pog.text(agency_id))
+                |> pog.parameter(pog.text(category))
+                |> pog.parameter(pog.text(locality))
+                |> pog.parameter(pog.text(q))
+                |> pog.returning(listing_decoder)
+                |> pog.execute(conn)
+                |> result.map(fn(r) { r.rows })
+
+              case rows_res {
+                Ok(rows) -> {
+                  let listings_json =
+                    "["
+                    <> {
+                      rows
+                      |> list.map(fn(row) {
+                        let #(
+                          id,
+                          title,
+                          loc,
+                          region,
+                          cat,
+                          cap,
+                          prc,
+                          curr,
+                          desc,
+                          short_desc,
+                          imgs,
+                          contract_fields,
+                          price_unit,
+                          availability_mode,
+                          contact_policy,
+                          cancellation_policy,
+                        ) = row
+                        let clean_imgs = case string.trim(imgs) {
+                          "" -> "[]"
+                          other -> other
+                        }
+                        let clean_contract_fields = case
+                          string.trim(contract_fields)
+                        {
+                          "" -> "{}"
+                          other -> other
+                        }
+                        "{\"id\":"
+                        <> { json.string(id) |> json.to_string }
+                        <> ",\"title\":"
+                        <> { json.string(title) |> json.to_string }
+                        <> ",\"locality\":"
+                        <> { json.string(loc) |> json.to_string }
+                        <> ",\"region\":"
+                        <> { json.string(region) |> json.to_string }
+                        <> ",\"category\":"
+                        <> { json.string(cat) |> json.to_string }
+                        <> ",\"capacity\":"
+                        <> { json.string(cap) |> json.to_string }
+                        <> ",\"price\":"
+                        <> { json.string(prc) |> json.to_string }
+                        <> ",\"currency\":"
+                        <> { json.string(curr) |> json.to_string }
+                        <> ",\"description\":"
+                        <> { json.string(desc) |> json.to_string }
+                        <> ",\"shortDescription\":"
+                        <> { json.string(short_desc) |> json.to_string }
+                        <> ",\"images\":"
+                        <> clean_imgs
+                        <> ",\"images_json\":"
+                        <> { json.string(clean_imgs) |> json.to_string }
+                        <> ",\"contractFields\":"
+                        <> clean_contract_fields
+                        <> ",\"contractFieldsJson\":"
+                        <> {
+                          json.string(clean_contract_fields) |> json.to_string
+                        }
+                        <> ",\"priceUnit\":"
+                        <> { json.string(price_unit) |> json.to_string }
+                        <> ",\"availabilityMode\":"
+                        <> { json.string(availability_mode) |> json.to_string }
+                        <> ",\"contactPolicy\":"
+                        <> { json.string(contact_policy) |> json.to_string }
+                        <> ",\"cancellationPolicy\":"
+                        <> {
+                          json.string(cancellation_policy) |> json.to_string
+                        }
+                        <> "}"
+                      })
+                      |> string.join(",")
+                    }
+                    <> "]"
+
+                  let response_body =
+                    "{\"ok\":true,"
+                    <> contract.version_field()
+                    <> ",\"count\":"
+                    <> int.to_string(list.length(rows))
+                    <> ",\"listings\":"
+                    <> listings_json
+                    <> "}"
+
+                  wisp.ok()
+                  |> wisp.json_body(response_body)
+                }
+                Error(_) ->
+                  wisp.response(500)
+                  |> wisp.json_body(
+                    "{\"ok\":false,\"error\":\"İlanlar okunamadı\"}",
+                  )
+              }
+            }
           }
         }
       }
@@ -1526,58 +1583,76 @@ fn api_feed_inventory(
         "{\"ok\":false,\"error\":\"Geçersiz yetkilendirme anahtarı\"}",
       )
     True -> {
-      let decoder = {
-        use service_date <- decode.field(0, decode.string)
-        use status <- decode.field(1, decode.string)
-        use price_minor <- decode.field(2, decode.int)
-        decode.success(#(service_date, status, price_minor))
-      }
-      case listing_id != "" && agency_id != "" {
-        False ->
-          wisp.response(400)
-          |> wisp.json_body(
-            "{\"ok\":false,\"error\":\"listing_id ve agency_id parametreleri gereklidir\"}",
-          )
-        True -> {
-          case
-            pog.query("select * from inventory.agency_inventory_feed($2,$1)")
-            |> pog.parameter(pog.text(listing_id))
-            |> pog.parameter(pog.text(agency_id))
-            |> pog.returning(decoder)
-            |> pog.execute(conn)
-          {
-            Ok(res) -> {
-              let days =
-                "["
-                <> {
-                  res.rows
-                  |> list.map(fn(r) {
-                    let #(d, st, pr) = r
-                    "{\"date\":"
-                    <> { json.string(d) |> json.to_string }
-                    <> ",\"status\":"
-                    <> { json.string(st) |> json.to_string }
-                    <> ",\"price_minor\":"
-                    <> int.to_string(pr)
-                    <> "}"
-                  })
-                  |> string.join(",")
-                }
-                <> "]"
-              let body =
-                "{\"ok\":true,\"listing_id\":"
-                <> { json.string(listing_id) |> json.to_string }
-                <> ",\"inventory\":"
-                <> days
-                <> "}"
-              wisp.ok()
-              |> wisp.json_body(body)
-            }
-            Error(_) ->
-              wisp.response(500)
+      case
+        feed_rate_limited(
+          req,
+          peer,
+          "inventory",
+          agency_id,
+          1200,
+          feed_window_ms,
+        )
+      {
+        True -> too_many_requests("Envanter feedi istek sınırı aşıldı")
+        False -> {
+          let decoder = {
+            use service_date <- decode.field(0, decode.string)
+            use status <- decode.field(1, decode.string)
+            use price_minor <- decode.field(2, decode.int)
+            decode.success(#(service_date, status, price_minor))
+          }
+          case listing_id != "" && agency_id != "" {
+            False ->
+              wisp.response(400)
               |> wisp.json_body(
-                "{\"ok\":false,\"error\":\"Envanter okunamadı\"}",
+                "{\"ok\":false,\"error\":\"listing_id ve agency_id parametreleri gereklidir\"}",
               )
+            True -> {
+              case
+                pog.query(
+                  "select * from inventory.agency_inventory_feed($2,$1)",
+                )
+                |> pog.parameter(pog.text(listing_id))
+                |> pog.parameter(pog.text(agency_id))
+                |> pog.returning(decoder)
+                |> pog.execute(conn)
+              {
+                Ok(res) -> {
+                  let days =
+                    "["
+                    <> {
+                      res.rows
+                      |> list.map(fn(r) {
+                        let #(d, st, pr) = r
+                        "{\"date\":"
+                        <> { json.string(d) |> json.to_string }
+                        <> ",\"status\":"
+                        <> { json.string(st) |> json.to_string }
+                        <> ",\"price_minor\":"
+                        <> int.to_string(pr)
+                        <> "}"
+                      })
+                      |> string.join(",")
+                    }
+                    <> "]"
+                  let body =
+                    "{\"ok\":true,"
+                    <> contract.version_field()
+                    <> ",\"listing_id\":"
+                    <> { json.string(listing_id) |> json.to_string }
+                    <> ",\"inventory\":"
+                    <> days
+                    <> "}"
+                  wisp.ok()
+                  |> wisp.json_body(body)
+                }
+                Error(_) ->
+                  wisp.response(500)
+                  |> wisp.json_body(
+                    "{\"ok\":false,\"error\":\"Envanter okunamadı\"}",
+                  )
+              }
+            }
           }
         }
       }
@@ -1667,6 +1742,25 @@ fn admin(
           ))
         False ->
           case req.method, path {
+            http.Get, ["admin", "commerce-operations"] -> {
+              case
+                list.contains(["supplier", "nexus"], s.workspace)
+                && list.contains(["owner", "editor"], s.role)
+              {
+                True -> commerce_operations.page(csrf)
+                False -> wisp.response(403)
+              }
+            }
+            http.Get, ["admin", "commerce-operations", "data"] ->
+              commerce_operations.data(conn, s)
+            http.Post, ["admin", "ai", "listing-quality"] -> {
+              use fields <- authorized_form(req, csrf, origin)
+              commerce_operations.review(conn, s, fields)
+            }
+            http.Post, ["admin", "commerce-operations", action] -> {
+              use fields <- authorized_form(req, csrf, origin)
+              commerce_operations.action(conn, s, action, fields)
+            }
             http.Get, ["admin", "control-center"] ->
               platform_control_page(conn, s, csrf)
             http.Get, ["admin", "category-filters", "data"] ->

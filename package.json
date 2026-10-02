@@ -1,0 +1,14 @@
+{
+  "name": "nexustraveltech-workers",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Optional central calendar worker runtime",
+  "type": "module",
+  "scripts": {
+    "calendar:once": "node scripts/calendar-worker.mjs --once",
+    "test": "node --test test/calendar-parser.test.mjs"
+  },
+  "dependencies": {
+    "node-ical": "^0.27.2"
+  }
+}

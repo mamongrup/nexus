@@ -51,11 +51,20 @@ const fixture_tenant_id = "00000000-0000-0000-0000-000000000001"
 /// owner yetkisi ister: nexus_app auth.users tablosuna yazamaz; platform DB
 /// testleri de PGOWNER ile koşar (scripts/test.ps1).
 pub fn create_unique_admin(db: pog.Connection, email: String) -> Nil {
-  "insert into core.organizations(id, legal_name) values ('00000000-0000-0000-0000-000000000001', 'NEXUS Test Organization') on conflict (id) do update set legal_name = excluded.legal_name"
-  |> pog.query()
-  |> pog.execute(db)
-  |> fn(_) { Nil }
-  "insert into auth.users(tenant_id, email, display_name, role, password_hash) values ('00000000-0000-0000-0000-000000000001', $1, 'Parallel Test Admin', 'owner', crypt('admin123456', gen_salt('bf'))) on conflict (email) do update set display_name = excluded.display_name, role = excluded.role, password_hash = excluded.password_hash, failed_attempts = 0, locked_until = null"
+  // `|>` `<>`'dan öncelikli olduğu için SQL, boruya girmeden önce tek
+  // ifadeye bağlanmalı; aksi halde `<> fixture_tenant_id |> pog.query()` gibi
+  // bir ifade boruya gömülür.
+  let org_sql =
+    "insert into core.organizations(id, legal_name) values ('"
+    <> fixture_tenant_id
+    <> "', 'NEXUS Test Organization') on conflict (id) do update set legal_name = excluded.legal_name"
+  let _ = org_sql |> pog.query() |> pog.execute(db)
+
+  let user_sql =
+    "insert into auth.users(tenant_id, email, display_name, role, password_hash) values ('"
+    <> fixture_tenant_id
+    <> "', $1, 'Parallel Test Admin', 'owner', crypt('admin123456', gen_salt('bf'))) on conflict (email) do update set display_name = excluded.display_name, role = excluded.role, password_hash = excluded.password_hash, failed_attempts = 0, locked_until = null"
+  user_sql
   |> pog.query()
   |> pog.parameter(pog.text(email))
   |> pog.execute(db)

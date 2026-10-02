@@ -434,6 +434,11 @@ pub fn shell(s: Session, csrf: String, page: String, body: Element(Nil)) {
                   False -> text("")
                 },
                 nav_link("/admin/reservations", "Rezervasyonlar", icons.hotel()),
+                nav_link(
+                  "/admin/commerce-operations",
+                  "Kanal operasyonları",
+                  icons.categories(),
+                ),
                 nav_link("/", "Ön Yüz ↗", icons.arrow_up_right()),
               ]
             }

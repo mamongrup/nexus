@@ -6,3 +6,6 @@
 *.log
 
 
+
+# Node (yalnızca Playwright/Node tabanlı yardımcı araçlar için)
+node_modules/

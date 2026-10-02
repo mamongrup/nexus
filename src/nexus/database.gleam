@@ -231,14 +231,6 @@ fn parse_window_rows(
   }
 }
 
-pub fn published(db: pog.Connection) -> Result(List(Property), Nil) {
-  pog.query("select * from catalog.published()")
-  |> pog.returning(property_decoder())
-  |> pog.execute(db)
-  |> result.map(fn(r) { r.rows })
-  |> result.replace_error(Nil)
-}
-
 pub fn scope(
   db: pog.Connection,
   s: Session,
